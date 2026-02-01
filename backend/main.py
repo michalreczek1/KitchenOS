@@ -103,11 +103,19 @@ def get_db():
 
 
 # --- AUTH HELPERS ---
+def _password_too_long(password: str) -> bool:
+    return len(password.encode("utf-8")) > 72
+
+
 def verify_password(plain_password: str, hashed_password: str) -> bool:
+    if _password_too_long(plain_password):
+        return False
     return pwd_context.verify(plain_password, hashed_password)
 
 
 def get_password_hash(password: str) -> str:
+    if _password_too_long(password):
+        raise HTTPException(status_code=400, detail="HasĹ‚o jest za dĹ‚ugie (limit 72 znaki)")
     return pwd_context.hash(password)
 
 

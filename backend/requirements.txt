@@ -29,6 +29,7 @@ email-validator==2.1.1
 
 # Auth
 passlib[bcrypt]==1.7.4
+bcrypt==3.2.2
 python-jose[cryptography]==3.3.0
 
 # Database (PostgreSQL)
