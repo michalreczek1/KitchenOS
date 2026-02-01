@@ -55,31 +55,32 @@ Optional env overrides:
 Open the app and use the "Bootstrap admin" switch on the login screen.
 If `ADMIN_BOOTSTRAP_TOKEN` is set in `.env`, you must paste the same value.
 
-## Deploy to Railway (step-by-step)
-This repo is a monorepo, so you will create two Railway services:
+## Deploy on Railway (step-by-step)
+This repo is a monorepo, so create two Railway services:
 one for the backend and one for the frontend.
 
 1) Create a new Railway project from this GitHub repo.
-2) Add a PostgreSQL plugin to the project (Railway will provide `DATABASE_URL`).
+2) Add a **PostgreSQL** plugin (Railway provides `DATABASE_URL`).
 3) Create a **Backend** service:
-   - Set Root Directory to `/backend`.
-   - Ensure Nixpacks is used (default).
-   - Environment variables:
-     - `DATABASE_URL` (from the Postgres plugin)
+   - Root Directory: `/backend`
+   - Env vars:
+     - `DATABASE_URL` (Reference from Postgres plugin)
      - `JWT_SECRET_KEY`
-     - `ADMIN_BOOTSTRAP_TOKEN` (optional, for first admin)
+     - `ADMIN_BOOTSTRAP_TOKEN` (optional, first admin)
      - `ALLOWED_ORIGINS` = your frontend URL
      - `GROQ_API_KEY` (optional, enables AI)
-   - Procfile is already set:
-     - `release` runs `alembic upgrade head` (migrations)
-     - `web` runs Uvicorn on `$PORT`
+   - Procfile runs migrations on start:
+     - `web` runs `alembic upgrade head` then Uvicorn on `$PORT`
+   - If Railway uses Python 3.13, add:
+     - `NIXPACKS_PYTHON_VERSION=3.11.9`
 4) Create a **Frontend** service:
-   - Set Root Directory to `/`.
-   - Environment variables:
+   - Root Directory: `/`
+   - Env vars:
      - `NEXT_PUBLIC_API_URL` = your backend URL
-   - Procfile is already set (`npm run start`).
-5) Deploy both services.
-6) Open the frontend URL and create the first admin user (Bootstrap admin).
+5) Deploy backend first:
+   - Check `https://<backend-domain>/health` → `status: ok`
+6) Deploy frontend:
+   - Open the frontend URL and create the first admin user (Bootstrap admin).
 
 ## Railway checklist (quick)
 - Repo connected
@@ -88,7 +89,19 @@ one for the backend and one for the frontend.
 - Frontend root dir `/`
 - Backend env: `DATABASE_URL`, `JWT_SECRET_KEY`, `ALLOWED_ORIGINS`
 - Frontend env: `NEXT_PUBLIC_API_URL`
-- Deploy backend first, then frontend
+- Backend health OK before frontend
+
+## Custom domain + HTTPS (Railway)
+1) Decide domains:
+   - Example: `app.yourdomain.com` (frontend)
+   - Optional: `api.yourdomain.com` (backend)
+2) In Railway, open the service → **Settings/Networking** → **Custom Domain**.
+3) Add your domain and copy the DNS instructions.
+4) In your DNS provider, create the required records (usually CNAME).
+5) Wait for verification (Railway will issue HTTPS automatically).
+6) Update env vars and redeploy:
+   - Backend `ALLOWED_ORIGINS = https://app.yourdomain.com`
+   - Frontend `NEXT_PUBLIC_API_URL = https://api.yourdomain.com`
 
 ## Notes
 - `.env` is ignored by git.
