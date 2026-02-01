@@ -15,7 +15,7 @@ from groq import Groq
 from jose import jwt, JWTError
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, text
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import logging
@@ -383,7 +383,7 @@ async def health_check(db: Session = Depends(get_db)):
     """Szczegółowy health check z testowaniem bazy danych"""
     try:
         # Test DB connection
-        db.execute("SELECT 1")
+        db.execute(text("SELECT 1"))
         db_status = "healthy"
     except Exception as e:
         logger.error(f"Database health check failed: {str(e)}")
