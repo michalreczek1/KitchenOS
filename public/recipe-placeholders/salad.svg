@@ -1,0 +1,23 @@
+﻿<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ECFBF4"/>
+      <stop offset="1" stop-color="#CDEFE1"/>
+    </linearGradient>
+    <linearGradient id="bowl" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#BCE9D2"/>
+      <stop offset="1" stop-color="#A6D9BD"/>
+    </linearGradient>
+  </defs>
+  <rect width="640" height="360" rx="28" fill="url(#bg)"/>
+  <ellipse cx="320" cy="246" rx="165" ry="26" fill="#A7DCC2" opacity="0.35"/>
+  <path d="M180 205 C200 270 440 270 460 205 Z" fill="url(#bowl)"/>
+  <ellipse cx="320" cy="205" rx="150" ry="32" fill="#F4FFFA" stroke="#B1DCC7" stroke-width="4"/>
+  <circle cx="255" cy="195" r="22" fill="#7FCFB1"/>
+  <circle cx="300" cy="185" r="26" fill="#8ED8BB"/>
+  <circle cx="350" cy="195" r="22" fill="#7CCCA9"/>
+  <circle cx="385" cy="185" r="18" fill="#8AD3B2"/>
+  <circle cx="275" cy="210" r="10" fill="#F7B7A6"/>
+  <circle cx="360" cy="210" r="9" fill="#F4AFA0"/>
+  <circle cx="325" cy="222" r="8" fill="#F7C1B1"/>
+</svg>

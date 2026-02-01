@@ -1,0 +1,38 @@
+# KitchenOS Backend Dependencies
+# Python 3.10+
+
+# Web Framework
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+pydantic==2.5.3
+
+# Database
+sqlalchemy==2.0.25
+
+# HTTP Client
+requests==2.31.0
+httpx==0.24.1
+httpcore==0.17.3
+
+# Recipe Scraping
+recipe-scrapers==14.52.0
+
+# AI/LLM (pinned to compatible version)
+groq==0.4.2
+
+# CORS
+python-multipart==0.0.6
+
+# Environment Variables (REQUIRED)
+python-dotenv==1.0.0
+email-validator==2.1.1
+
+# Auth
+passlib[bcrypt]==1.7.4
+python-jose[cryptography]==3.3.0
+
+# Database (PostgreSQL)
+psycopg2-binary==2.9.9
+
+# Migrations
+alembic==1.13.1
