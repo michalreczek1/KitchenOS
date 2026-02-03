@@ -1,6 +1,19 @@
 'use client'
 
-import { Plus, Trash2, ExternalLink, UtensilsCrossed, Eye, Soup, Salad, Wheat, CakeSlice, Utensils } from 'lucide-react'
+import {
+  Plus,
+  Trash2,
+  ExternalLink,
+  UtensilsCrossed,
+  Eye,
+  Soup,
+  Salad,
+  Wheat,
+  CakeSlice,
+  Utensils,
+} from 'lucide-react'
+import { StarIcon as StarSolidIcon } from '@heroicons/react/24/solid'
+import { StarIcon as StarOutlineIcon } from '@heroicons/react/24/outline'
 import type { Recipe, RecipeCategory } from '@/lib/api'
 import { GENERIC_RECIPE_IMAGE_URL, getCustomRecipePlaceholder } from '@/lib/recipe-placeholders'
 
@@ -10,9 +23,19 @@ interface RecipeCardProps {
   onDelete: (id: number) => void
   isInPlanner?: boolean
   onOpenPreview?: (id: number) => void
+  showRating?: boolean
+  onRate?: (id: number, rating: number) => void
 }
 
-export function RecipeCard({ recipe, onAddToPlanner, onDelete, isInPlanner, onOpenPreview }: RecipeCardProps) {
+export function RecipeCard({
+  recipe,
+  onAddToPlanner,
+  onDelete,
+  isInPlanner,
+  onOpenPreview,
+  showRating = false,
+  onRate,
+}: RecipeCardProps) {
   const CATEGORY_ICON_MAP: Record<RecipeCategory, { Icon: typeof UtensilsCrossed; className: string }> = {
     obiady: { Icon: Soup, className: 'text-amber-400' },
     salatki: { Icon: Salad, className: 'text-emerald-400' },
@@ -32,6 +55,7 @@ export function RecipeCard({ recipe, onAddToPlanner, onDelete, isInPlanner, onOp
   const categoryIcon = recipe.category ? CATEGORY_ICON_MAP[recipe.category] : null
   const FallbackIcon = categoryIcon?.Icon ?? UtensilsCrossed
   const fallbackIconClass = categoryIcon?.className ?? 'text-muted-foreground/30'
+  const ratingValue = recipe.rating ?? 0
 
   return (
     <div className="group relative overflow-hidden rounded-2xl border border-border bg-card shadow-sm transition-all duration-300 hover:shadow-md">
@@ -51,6 +75,32 @@ export function RecipeCard({ recipe, onAddToPlanner, onDelete, isInPlanner, onOp
       </div>
       
       <div className="p-4">
+        {showRating && (
+          <div className="mb-2 flex items-center gap-1.5">
+            {Array.from({ length: 5 }).map((_, index) => {
+              const value = index + 1
+              const isActive = value <= ratingValue
+              return (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    onRate?.(recipe.id, value)
+                  }}
+                  className="group/star rounded-full p-1 transition-all hover:-translate-y-0.5 hover:bg-amber-50/80"
+                  aria-label={`Oceń na ${value} gwiazdek`}
+                >
+                  {isActive ? (
+                    <StarSolidIcon className="h-4 w-4 text-amber-500 drop-shadow-[0_2px_6px_rgba(245,158,11,0.35)] transition-all" />
+                  ) : (
+                    <StarOutlineIcon className="h-4 w-4 text-muted-foreground/40 transition-all group-hover/star:text-amber-400/70" />
+                  )}
+                </button>
+              )
+            })}
+          </div>
+        )}
         <h3 className="mb-1 line-clamp-2 text-base font-semibold text-foreground">
           {recipe.title}
         </h3>

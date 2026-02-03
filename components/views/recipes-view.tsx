@@ -14,6 +14,7 @@ interface RecipesViewProps {
   plannerRecipeIds: number[]
   onAddToPlanner: (recipe: Recipe) => void
   onDeleteRecipe: (id: number) => void
+  onRateRecipe: (id: number, rating: number) => void
 }
 
 export function RecipesView({
@@ -22,6 +23,7 @@ export function RecipesView({
   plannerRecipeIds,
   onAddToPlanner,
   onDeleteRecipe,
+  onRateRecipe,
 }: RecipesViewProps) {
   const [searchQuery, setSearchQuery] = useState('')
   const [activeCategory, setActiveCategory] = useState<RecipeCategory | null>(null)
@@ -124,6 +126,8 @@ export function RecipesView({
               onDelete={onDeleteRecipe}
               isInPlanner={plannerRecipeIds.includes(recipe.id)}
               onOpenPreview={setSelectedRecipeId}
+              showRating
+              onRate={onRateRecipe}
             />
           ))}
         </div>

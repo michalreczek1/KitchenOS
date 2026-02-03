@@ -72,6 +72,7 @@ export interface Recipe {
   image_url: string
   source_url: string
   category?: RecipeCategory
+  rating?: number
   created_at?: string
 }
 
@@ -202,6 +203,18 @@ export async function fetchRecipeDetails(id: number): Promise<RecipeDetails> {
     throw new Error('Failed to fetch recipe details')
   }
   return response.json()
+}
+
+export async function setRecipeRating(recipeId: number, rating: number): Promise<number> {
+  const response = await apiFetch(`/api/recipes/${recipeId}/rating`, {
+    method: 'PUT',
+    body: JSON.stringify({ rating }),
+  })
+  if (!response.ok) {
+    throw new Error('Failed to update recipe rating')
+  }
+  const data = (await response.json()) as { rating: number }
+  return data.rating
 }
 
 export async function fetchStats(): Promise<Stats> {

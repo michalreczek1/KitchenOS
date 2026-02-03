@@ -43,6 +43,20 @@ class RecipeDB(Base):
     base_portions = Column(Integer, default=1, nullable=False)
 
 
+class RecipeRatingDB(Base):
+    __tablename__ = "recipe_ratings"
+    __table_args__ = (UniqueConstraint("owner_id", "recipe_id", name="uq_recipe_ratings_owner_recipe"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    owner_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
+    recipe_id = Column(Integer, ForeignKey("recipes.id", ondelete="CASCADE"), index=True, nullable=False)
+    rating = Column(Integer, nullable=False)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+    updated_at = Column(
+        DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow
+    )
+
+
 class PlanDB(Base):
     __tablename__ = "plans"
     __table_args__ = (UniqueConstraint("owner_id", name="uq_plans_owner"),)

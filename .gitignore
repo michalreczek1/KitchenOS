@@ -30,4 +30,6 @@ next-env.d.ts
 # backend
 /backend/venv
 /backend/__pycache__
+/backend/**/__pycache__/
+/backend/**/*.pyc
 /backend/*.db
