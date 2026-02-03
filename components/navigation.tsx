@@ -1,6 +1,17 @@
 'use client'
 
-import { LayoutDashboard, BookOpen, Plus, Calendar, ShoppingCart, ChefHat, Shield, LogOut } from 'lucide-react'
+import {
+  LayoutDashboard,
+  BookOpen,
+  Plus,
+  Calendar,
+  ShoppingCart,
+  ChefHat,
+  Shield,
+  LogOut,
+  MoreHorizontal,
+} from 'lucide-react'
+import { Sheet, SheetClose, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
 
 type View = 'dashboard' | 'recipes' | 'add' | 'planner' | 'shopping' | 'admin'
 
@@ -32,6 +43,7 @@ export function Navigation({
   const items = isAdmin
     ? [...navItems, { id: 'admin' as const, label: 'Admin', icon: Shield, colorClass: 'icon-sky' }]
     : navItems
+  const mobileItems = navItems
 
   return (
     <>
@@ -99,7 +111,7 @@ export function Navigation({
       {/* Mobile Bottom Navigation */}
       <nav className="fixed bottom-0 left-0 right-0 z-40 border-t border-border/50 bg-sidebar/90 backdrop-blur-xl md:hidden">
         <div className="flex items-center justify-around py-2">
-          {items.map((item) => {
+          {mobileItems.map((item) => {
             const Icon = item.icon
             const isActive = currentView === item.id
             const showBadge = item.id === 'planner' && plannerCount > 0
@@ -129,14 +141,55 @@ export function Navigation({
               </button>
             )
           })}
-          {onLogout && (
-            <button
-              onClick={onLogout}
-              className="relative flex flex-col items-center gap-1 rounded-xl px-4 py-2 text-muted-foreground transition-all hover:text-foreground"
-            >
-              <LogOut className="h-5 w-5" />
-              <span className="text-[10px] font-medium">Wyloguj</span>
-            </button>
+          {isAdmin ? (
+            <Sheet>
+              <SheetTrigger asChild>
+                <button className="relative flex flex-col items-center gap-1 rounded-xl px-4 py-2 text-muted-foreground transition-all hover:text-foreground">
+                  <MoreHorizontal className="h-5 w-5" />
+                  <span className="text-[10px] font-medium">Menu</span>
+                </button>
+              </SheetTrigger>
+              <SheetContent side="bottom" className="rounded-t-3xl border-t border-border/50">
+                <SheetHeader>
+                  <SheetTitle>Menu</SheetTitle>
+                  {userEmail && (
+                    <p className="text-xs text-muted-foreground">Zalogowany: {userEmail}</p>
+                  )}
+                </SheetHeader>
+                <div className="space-y-2 px-4 pb-6">
+                  <SheetClose asChild>
+                    <button
+                      onClick={() => onViewChange('admin')}
+                      className="flex w-full items-center gap-3 rounded-xl border border-border/50 bg-card/60 px-4 py-3 text-sm font-semibold text-foreground"
+                    >
+                      <Shield className="h-4 w-4 icon-sky" />
+                      Panel admina
+                    </button>
+                  </SheetClose>
+                  {onLogout && (
+                    <SheetClose asChild>
+                      <button
+                        onClick={onLogout}
+                        className="flex w-full items-center gap-3 rounded-xl border border-border/50 bg-card/60 px-4 py-3 text-sm font-semibold text-foreground"
+                      >
+                        <LogOut className="h-4 w-4" />
+                        Wyloguj
+                      </button>
+                    </SheetClose>
+                  )}
+                </div>
+              </SheetContent>
+            </Sheet>
+          ) : (
+            onLogout && (
+              <button
+                onClick={onLogout}
+                className="relative flex flex-col items-center gap-1 rounded-xl px-4 py-2 text-muted-foreground transition-all hover:text-foreground"
+              >
+                <LogOut className="h-5 w-5" />
+                <span className="text-[10px] font-medium">Wyloguj</span>
+              </button>
+            )
           )}
         </div>
       </nav>
