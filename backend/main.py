@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import logging
 from dotenv import load_dotenv
-from fastapi.responses import Response
+from fastapi.responses import Response, HTMLResponse, RedirectResponse
 
 from db import SessionLocal
 from models import UserDB, RecipeDB, RecipeRatingDB, PlanDB, ParseLogDB, GoogleCalendarDB
@@ -719,10 +719,14 @@ async def google_oauth_callback(code: str, state: str, db: Session = Depends(get
     db.commit()
 
     if FRONTEND_URL:
-        return Response(status_code=302, headers={"Location": f"{FRONTEND_URL}?google=connected"})
-    return Response(
-        content="PoĹ‚Ä…czono z Google Calendar. MoĹĽesz wrĂłciÄ‡ do aplikacji.",
-        media_type="text/html",
+        return RedirectResponse(url=f"{FRONTEND_URL}?google=connected", status_code=302)
+    return HTMLResponse(
+        content=(
+            "<!doctype html><meta charset='utf-8'/>"
+            "<title>KitchenOS</title>"
+            "<p>Po\u0142\u0105czono z Google Calendar. Mo\u017cesz wr\u00f3ci\u0107 do aplikacji.</p>"
+        ),
+        media_type="text/html; charset=utf-8",
     )
 
 
