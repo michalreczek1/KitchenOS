@@ -333,6 +333,15 @@ class RegisterRequest(BaseModel):
     password: str = Field(..., min_length=6, max_length=128)
 
 
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(..., min_length=1)
+    new_password: str = Field(..., min_length=6, max_length=128)
+
+
+class DeleteAccountRequest(BaseModel):
+    password: str = Field(..., min_length=1)
+
+
 class AdminUserCreate(BaseModel):
     email: EmailStr
     password: Optional[str] = None
@@ -637,6 +646,36 @@ async def login(payload: LoginRequest, db: Session = Depends(get_db)):
 @app.get("/api/auth/me", response_model=UserResponse, tags=["Auth"])
 async def get_me(current_user: UserDB = Depends(get_current_user)):
     return current_user
+
+
+@app.post("/api/auth/change-password", tags=["Auth"])
+async def change_password(
+    payload: ChangePasswordRequest,
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not verify_password(payload.current_password, current_user.hashed_password):
+        raise HTTPException(status_code=400, detail="Obecne has\u0142o jest nieprawid\u0142owe")
+    if payload.current_password == payload.new_password:
+        raise HTTPException(status_code=400, detail="Nowe has\u0142o musi by\u0107 inne ni\u017c obecne")
+
+    current_user.hashed_password = get_password_hash(payload.new_password)
+    db.commit()
+    return {"status": "ok"}
+
+
+@app.post("/api/auth/delete-account", tags=["Auth"])
+async def delete_account(
+    payload: DeleteAccountRequest,
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not verify_password(payload.password, current_user.hashed_password):
+        raise HTTPException(status_code=400, detail="Has\u0142o jest nieprawid\u0142owe")
+
+    db.delete(current_user)
+    db.commit()
+    return {"status": "deleted"}
 
 
 # --- GOOGLE CALENDAR ---

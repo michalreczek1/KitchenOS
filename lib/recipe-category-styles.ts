@@ -5,6 +5,14 @@ export const categoryStyles: Record<RecipeCategory, { base: string; active: stri
     base: 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100',
     active: 'border-amber-300 bg-amber-200 text-amber-900 shadow-[0_8px_18px_rgba(245,158,11,0.25)]',
   },
+  sniadania: {
+    base: 'border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100',
+    active: 'border-sky-300 bg-sky-200 text-sky-900 shadow-[0_8px_18px_rgba(56,189,248,0.25)]',
+  },
+  lunchbox: {
+    base: 'border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-100',
+    active: 'border-violet-300 bg-violet-200 text-violet-900 shadow-[0_8px_18px_rgba(139,92,246,0.25)]',
+  },
   salatki: {
     base: 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100',
     active: 'border-emerald-300 bg-emerald-200 text-emerald-900 shadow-[0_8px_18px_rgba(16,185,129,0.25)]',

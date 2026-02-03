@@ -10,6 +10,8 @@ import {
   Salad,
   Wheat,
   CakeSlice,
+  Coffee,
+  Briefcase,
   Utensils,
 } from 'lucide-react'
 import { StarIcon as StarSolidIcon } from '@heroicons/react/24/solid'
@@ -38,6 +40,8 @@ export function RecipeCard({
 }: RecipeCardProps) {
   const CATEGORY_ICON_MAP: Record<RecipeCategory, { Icon: typeof UtensilsCrossed; className: string }> = {
     obiady: { Icon: Soup, className: 'text-amber-400' },
+    sniadania: { Icon: Coffee, className: 'text-sky-400' },
+    lunchbox: { Icon: Briefcase, className: 'text-violet-400' },
     salatki: { Icon: Salad, className: 'text-emerald-400' },
     pieczywo: { Icon: Wheat, className: 'text-yellow-500' },
     desery: { Icon: CakeSlice, className: 'text-rose-400' },
@@ -118,7 +122,7 @@ export function RecipeCard({
         )}
       </div>
 
-      <div className="absolute top-3 right-3 flex gap-2 opacity-0 transition-opacity duration-300 group-hover:opacity-100">
+      <div className="absolute top-3 right-3 flex gap-2 opacity-100 transition-opacity duration-300 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100">
         {onOpenPreview && (
           <button
             onClick={(event) => {
