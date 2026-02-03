@@ -219,7 +219,14 @@ export function AdminView() {
             <div className="divide-y divide-border/30">
               {users.map((user) => (
                 <div key={user.id} className="grid grid-cols-[2fr_1fr_1fr_1fr] gap-4 px-4 py-3 text-sm">
-                  <span className="truncate">{user.email}</span>
+                  <div className="min-w-0">
+                    <span className="block truncate">{user.email}</span>
+                    {(user.first_name || user.last_name) && (
+                      <span className="block truncate text-xs text-muted-foreground">
+                        {[user.first_name, user.last_name].filter(Boolean).join(' ')}
+                      </span>
+                    )}
+                  </div>
                   <button
                     onClick={() => toggleUser(user, 'is_admin')}
                     className={`rounded-lg px-2 py-1 text-xs font-semibold ${

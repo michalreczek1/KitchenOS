@@ -196,6 +196,8 @@ class TokenResponse(BaseModel):
 
 class UserResponse(BaseModel):
     id: int
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
     email: EmailStr
     is_admin: bool
     is_active: bool
@@ -210,6 +212,13 @@ class BootstrapRequest(BaseModel):
     email: EmailStr
     password: str
     token: Optional[str] = None
+
+
+class RegisterRequest(BaseModel):
+    first_name: str = Field(..., min_length=1, max_length=100)
+    last_name: str = Field(..., min_length=1, max_length=100)
+    email: EmailStr
+    password: str = Field(..., min_length=6, max_length=128)
 
 
 class AdminUserCreate(BaseModel):
@@ -436,13 +445,34 @@ async def bootstrap_admin(request: BootstrapRequest, db: Session = Depends(get_d
     return user
 
 
+@app.post("/api/auth/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED, tags=["Auth"])
+async def register_user(request: RegisterRequest, db: Session = Depends(get_db)):
+    email = request.email.lower()
+    existing = db.query(UserDB).filter(UserDB.email == email).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Użytkownik już istnieje")
+
+    user = UserDB(
+        first_name=request.first_name.strip(),
+        last_name=request.last_name.strip(),
+        email=email,
+        hashed_password=get_password_hash(request.password),
+        is_admin=False,
+        is_active=False,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
 @app.post("/api/auth/login", response_model=TokenResponse, tags=["Auth"])
 async def login(payload: LoginRequest, db: Session = Depends(get_db)):
     user = db.query(UserDB).filter(UserDB.email == payload.email.lower()).first()
     if not user or not verify_password(payload.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Nieprawidłowy email lub hasło")
     if not user.is_active:
-        raise HTTPException(status_code=403, detail="Konto jest zablokowane")
+        raise HTTPException(status_code=403, detail="Konto nieaktywne. Skontaktuj się z administratorem")
 
     user.last_login_at = datetime.datetime.utcnow()
     db.commit()
