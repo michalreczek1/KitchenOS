@@ -86,6 +86,22 @@ export interface RecipeDetails extends Recipe {
   cook_time?: string
 }
 
+export interface InspireIngredient {
+  item: string
+  amount?: string
+  is_extra?: boolean
+}
+
+export interface InspireRecipe {
+  title: string
+  description?: string
+  difficulty?: string
+  prep_time?: string
+  ingredients: InspireIngredient[]
+  instructions: string[]
+  tips?: string
+}
+
 export interface Stats {
   total_recipes: number
   planned_meals: number
@@ -362,6 +378,42 @@ export async function addManualRecipe(data: ManualRecipeData): Promise<Recipe> {
   })
   if (!response.ok) {
     throw new Error('Failed to add manual recipe')
+  }
+  return response.json()
+}
+
+export async function inspireRecipe(ingredients: string[]): Promise<InspireRecipe> {
+  const response = await apiFetch('/api/ai/inspire', {
+    method: 'POST',
+    body: JSON.stringify(ingredients),
+  })
+  if (!response.ok) {
+    const data = await response.json().catch(() => null)
+    throw new Error(data?.detail || 'Failed to inspire recipe')
+  }
+  return response.json()
+}
+
+export async function saveInspiredRecipe(recipe: InspireRecipe): Promise<Recipe> {
+  const ingredients = recipe.ingredients.map((entry) => {
+    const amount = entry.amount?.trim()
+    return amount ? `${entry.item} (${amount})` : entry.item
+  })
+  const response = await apiFetch('/api/recipes', {
+    method: 'POST',
+    body: JSON.stringify({
+      title: recipe.title,
+      ingredients,
+      instructions: recipe.instructions,
+      description: recipe.description,
+      prep_time: recipe.prep_time,
+      difficulty: recipe.difficulty,
+      base_portions: 1,
+    }),
+  })
+  if (!response.ok) {
+    const data = await response.json().catch(() => null)
+    throw new Error(data?.detail || 'Failed to save recipe')
   }
   return response.json()
 }

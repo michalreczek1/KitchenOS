@@ -8,6 +8,7 @@ import {
   Calendar,
   ShoppingCart,
   ChefHat,
+  Sparkles,
   Shield,
   LogOut,
   MoreHorizontal,
@@ -35,7 +36,15 @@ import { Button } from '@/components/ui/button'
 import { changePassword, deleteAccount } from '@/lib/api'
 import { useToast } from '@/components/toast-provider'
 
-type View = 'dashboard' | 'recipes' | 'add' | 'planner' | 'shopping' | 'admin'
+type View = 'dashboard' | 'recipes' | 'add' | 'planner' | 'shopping' | 'inspiracje' | 'admin'
+
+type NavItem = {
+  id: View
+  label: string
+  icon: typeof LayoutDashboard
+  colorClass: string
+  isSub?: boolean
+}
 
 interface NavigationProps {
   currentView: View
@@ -46,12 +55,13 @@ interface NavigationProps {
   onLogout?: () => void
 }
 
-const navItems = [
+const navItems: NavItem[] = [
   { id: 'dashboard' as const, label: 'Pulpit', icon: LayoutDashboard, colorClass: 'icon-mint' },
   { id: 'recipes' as const, label: 'Przepisy', icon: BookOpen, colorClass: 'icon-peach' },
   { id: 'add' as const, label: 'Dodaj', icon: Plus, colorClass: 'icon-lavender' },
   { id: 'planner' as const, label: 'Planer', icon: Calendar, colorClass: 'icon-sky' },
   { id: 'shopping' as const, label: 'Zakupy', icon: ShoppingCart, colorClass: 'icon-rose' },
+  { id: 'inspiracje' as const, label: 'Inspiracje', icon: Sparkles, colorClass: 'icon-mint' },
 ]
 
 export function Navigation({
@@ -72,7 +82,7 @@ export function Navigation({
   const items = isAdmin
     ? [...navItems, { id: 'admin' as const, label: 'Admin', icon: Shield, colorClass: 'icon-sky' }]
     : navItems
-  const mobileItems = navItems
+  const mobileItems = navItems.filter((item) => !item.isSub)
 
   const resetPasswordForm = () => {
     setCurrentPassword('')
@@ -146,25 +156,26 @@ export function Navigation({
             const Icon = item.icon
             const isActive = currentView === item.id
             const showBadge = item.id === 'planner' && plannerCount > 0
+            const isSub = item.isSub
             
             return (
               <button
                 key={item.id}
                 onClick={() => onViewChange(item.id)}
-                className={`relative flex w-full items-center gap-3 rounded-xl px-4 py-3 text-sm font-medium transition-all ${
+                className={`relative flex w-full items-center gap-3 rounded-xl font-medium transition-all ${
                   isActive
                     ? 'bg-primary/10 text-foreground'
                     : 'text-muted-foreground hover:bg-secondary hover:text-foreground'
-                }`}
+                } ${isSub ? 'pl-10 pr-4 py-2 text-xs' : 'px-4 py-3 text-sm'}`}
               >
-                <Icon className={`h-5 w-5 ${item.colorClass}`} />
+                <Icon className={`${isSub ? 'h-4 w-4' : 'h-5 w-5'} ${item.colorClass}`} />
                 <span>{item.label}</span>
                 {showBadge && (
                   <span className="ml-auto flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-xs font-semibold text-primary-foreground">
                     {plannerCount}
                   </span>
                 )}
-                {isActive && (
+                {isActive && !isSub && (
                   <span className="absolute left-0 top-1/2 h-6 w-1 -translate-y-1/2 rounded-r-full bg-primary" />
                 )}
               </button>
@@ -278,6 +289,15 @@ export function Navigation({
                     </button>
                   </SheetClose>
                 )}
+                <SheetClose asChild>
+                  <button
+                    onClick={() => onViewChange('inspiracje')}
+                    className="flex w-full items-center gap-3 rounded-xl border border-border/50 bg-card/60 px-4 py-3 text-sm font-semibold text-foreground"
+                  >
+                    <Sparkles className="h-4 w-4 icon-mint" />
+                    Inspiracje
+                  </button>
+                </SheetClose>
                 <SheetClose asChild>
                   <button
                     onClick={() => setIsPasswordOpen(true)}
