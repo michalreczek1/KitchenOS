@@ -3,6 +3,7 @@
 import { createContext, useContext, useEffect, useMemo, useState } from 'react'
 import {
   login as apiLogin,
+  registerAccount as apiRegisterAccount,
   fetchMe,
   bootstrapAdmin as apiBootstrapAdmin,
   setAuthToken,
@@ -14,6 +15,12 @@ interface AuthContextValue {
   user: AuthUser | null
   isLoading: boolean
   login: (email: string, password: string) => Promise<void>
+  registerAccount: (payload: {
+    first_name: string
+    last_name: string
+    email: string
+    password: string
+  }) => Promise<void>
   bootstrapAdmin: (email: string, password: string, token?: string) => Promise<void>
   logout: () => void
 }
@@ -80,13 +87,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await login(email, password)
   }
 
+  const registerAccount = async (payload: {
+    first_name: string
+    last_name: string
+    email: string
+    password: string
+  }) => {
+    await apiRegisterAccount(payload)
+  }
+
   const logout = () => {
     setAuthToken(null)
     setUser(null)
   }
 
   const value = useMemo(
-    () => ({ user, isLoading, login, bootstrapAdmin, logout }),
+    () => ({ user, isLoading, login, registerAccount, bootstrapAdmin, logout }),
     [user, isLoading]
   )
 

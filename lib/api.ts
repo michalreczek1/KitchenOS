@@ -92,6 +92,8 @@ export interface Stats {
 
 export interface AuthUser {
   id: number
+  first_name?: string | null
+  last_name?: string | null
   email: string
   is_admin: boolean
   is_active: boolean
@@ -286,7 +288,25 @@ export async function login(email: string, password: string): Promise<AuthTokenR
     body: JSON.stringify({ email, password }),
   })
   if (!response.ok) {
-    throw new Error('Failed to login')
+    const data = await response.json().catch(() => null)
+    throw new Error(data?.detail || 'Failed to login')
+  }
+  return response.json()
+}
+
+export async function registerAccount(payload: {
+  first_name: string
+  last_name: string
+  email: string
+  password: string
+}): Promise<AuthUser> {
+  const response = await apiFetch('/api/auth/register', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) {
+    const data = await response.json().catch(() => null)
+    throw new Error(data?.detail || 'Failed to register')
   }
   return response.json()
 }

@@ -26,6 +26,8 @@ Run migrations:
 python -m alembic upgrade head
 ```
 
+Tip: run this after pulling new backend changes (e.g., new columns/tables).
+
 Start backend:
 ```
 python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
