@@ -129,21 +129,29 @@ export function ShoppingView({ shoppingList, onRefresh, isLoading, listSignature
 
   const handleShareOrCopy = async () => {
     if (remainingCount === 0) {
-      showToast('Brak produktów do udostępnienia', 'info')
+      showToast('Brak produktow do udostepnienia', 'info')
       return
     }
     const text = buildShareText(remainingItemsByCategory)
     try {
-      if (navigator.share) {
-        await navigator.share({ title: 'Lista zakupów', text })
-        showToast('Lista udostępniona', 'success')
+      const isMobile =
+        /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '') ||
+        window.matchMedia('(pointer: coarse)').matches
+      if (navigator.share && isMobile) {
+        await navigator.share({ title: 'Lista zakupow', text })
+        showToast('Lista udostepniona', 'success')
       } else {
         await copyToClipboard(text)
-        showToast('Lista skopiowana', 'success')
+        showToast('Lista skopiowana do schowka', 'success')
       }
     } catch (error) {
       if ((error as DOMException)?.name !== 'AbortError') {
-        showToast('Nie udało się udostępnić listy', 'error')
+        try {
+          await copyToClipboard(text)
+          showToast('Lista skopiowana do schowka', 'success')
+        } catch {
+          showToast('Nie udalo sie udostepnic listy', 'error')
+        }
       }
     }
   }
