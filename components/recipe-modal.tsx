@@ -2,7 +2,9 @@
 
 import { useEffect, useState } from 'react'
 import { X, Clock, Users, ExternalLink, UtensilsCrossed, Loader2, PenLine } from 'lucide-react'
-import { fetchRecipeDetails, type RecipeDetails } from '@/lib/api'
+import { fetchRecipeDetails, RECIPE_CATEGORIES, type RecipeCategory, type RecipeDetails } from '@/lib/api'
+import { categoryStyles } from '@/lib/recipe-category-styles'
+import { getCustomRecipeCategoryMap, saveCustomRecipeCategory } from '@/lib/custom-recipe-categories'
 
 interface RecipeModalProps {
   recipeId: number | null
@@ -19,6 +21,7 @@ export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
   const [recipe, setRecipe] = useState<RecipeDetails | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [activeCategory, setActiveCategory] = useState<RecipeCategory>('inne')
 
   const GENERIC_ICON_URL = 'https://cdn-icons-png.flaticon.com/512/3081/3081557.png'
   const sourceUrl =
@@ -44,6 +47,13 @@ export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
       .catch(() => setError('Nie udało się załadować szczegółów przepisu'))
       .finally(() => setIsLoading(false))
   }, [recipeId])
+
+  useEffect(() => {
+    if (!recipe) return
+    const stored = getCustomRecipeCategoryMap()[recipe.id]
+    const fallback = recipe.category ?? 'inne'
+    setActiveCategory(stored ?? fallback)
+  }, [recipe])
 
   useEffect(() => {
     const handleEscape = (e: KeyboardEvent) => {
@@ -100,6 +110,28 @@ export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
               {/* Header */}
               <div>
                 <h2 className="text-2xl font-bold text-foreground">{recipe.title}</h2>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {RECIPE_CATEGORIES.map((category) => {
+                    const isActive = activeCategory === category.value
+                    return (
+                      <button
+                        key={category.value}
+                        type="button"
+                        onClick={() => {
+                          setActiveCategory(category.value)
+                          saveCustomRecipeCategory(recipe.id, category.value)
+                        }}
+                        className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition-all ${
+                          isActive
+                            ? categoryStyles[category.value].active
+                            : 'border-border bg-white text-muted-foreground hover:bg-muted'
+                        }`}
+                      >
+                        {category.label}
+                      </button>
+                    )
+                  })}
+                </div>
                 <div className="mt-3 flex flex-wrap gap-3">
                   {recipe.prep_time && (
                     <div className="flex items-center gap-1.5 text-sm text-muted-foreground">

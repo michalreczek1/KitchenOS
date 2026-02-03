@@ -81,6 +81,12 @@ function KitchenOSApp({ user, onLogout }: { user: AuthUser; onLogout: () => void
     revalidateOnFocus: false,
   })
 
+  useEffect(() => {
+    const handleCategoriesUpdate = () => mutateRecipes()
+    window.addEventListener('kitchenos:categories', handleCategoriesUpdate)
+    return () => window.removeEventListener('kitchenos:categories', handleCategoriesUpdate)
+  }, [mutateRecipes])
+
   // Fetch stats
   const {
     data: stats,

@@ -19,6 +19,7 @@ const readCategoryMap = (): CategoryMap => {
 const writeCategoryMap = (map: CategoryMap) => {
   if (typeof window === 'undefined') return
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(map))
+  window.dispatchEvent(new CustomEvent('kitchenos:categories'))
 }
 
 export const saveCustomRecipeCategory = (id: number, category: RecipeCategory) => {
