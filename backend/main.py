@@ -5,7 +5,7 @@ import datetime
 import json
 import uuid
 import secrets
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlencode
 from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.security import OAuth2PasswordBearer
 from pydantic import BaseModel, HttpUrl, Field, EmailStr
@@ -23,7 +23,7 @@ from dotenv import load_dotenv
 from fastapi.responses import Response
 
 from db import SessionLocal
-from models import UserDB, RecipeDB, RecipeRatingDB, PlanDB, ParseLogDB
+from models import UserDB, RecipeDB, RecipeRatingDB, PlanDB, ParseLogDB, GoogleCalendarDB
 
 
 # Load environment variables from .env file
@@ -57,6 +57,16 @@ if not JWT_SECRET_KEY:
 JWT_ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256")
 JWT_EXPIRE_DAYS = int(os.environ.get("JWT_EXPIRE_DAYS", "7"))
 ADMIN_BOOTSTRAP_TOKEN = os.environ.get("ADMIN_BOOTSTRAP_TOKEN")
+
+# --- GOOGLE CALENDAR CONFIG ---
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
+GOOGLE_REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI")
+FRONTEND_URL = os.environ.get("FRONTEND_URL")
+GOOGLE_SCOPES = [
+    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/calendar.readonly",
+]
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
@@ -152,6 +162,108 @@ def get_current_user(
     return user
 
 
+def ensure_google_config() -> None:
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET or not GOOGLE_REDIRECT_URI:
+        raise HTTPException(
+            status_code=500,
+            detail="Google OAuth nie jest skonfigurowany. Ustaw GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI.",
+        )
+
+
+def create_google_state_token(user_id: int) -> str:
+    payload = {
+        "sub": str(user_id),
+        "nonce": secrets.token_urlsafe(8),
+        "exp": datetime.datetime.utcnow() + datetime.timedelta(minutes=10),
+    }
+    return jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+
+
+def decode_google_state_token(state: str) -> int:
+    try:
+        payload = jwt.decode(state, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+    except JWTError:
+        raise HTTPException(status_code=400, detail="NieprawidĹ‚owy token stanu OAuth")
+    user_id = payload.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="Brak uĹĽytkownika w tokenie OAuth")
+    try:
+        return int(user_id)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="NieprawidĹ‚owy identyfikator uĹĽytkownika")
+
+
+def get_google_token_record(db: Session, user_id: int) -> GoogleCalendarDB:
+    record = db.query(GoogleCalendarDB).filter(GoogleCalendarDB.owner_id == user_id).first()
+    if not record:
+        raise HTTPException(status_code=400, detail="Brak poĹ‚Ä…czenia z Google Calendar")
+    return record
+
+
+def refresh_google_access_token(db: Session, record: GoogleCalendarDB) -> str:
+    if record.expires_at and record.expires_at > datetime.datetime.utcnow() + datetime.timedelta(seconds=60):
+        return record.access_token
+    if not record.refresh_token:
+        raise HTTPException(status_code=401, detail="Brak refresh token. PoĹ‚Ä…cz Google ponownie.")
+
+    ensure_google_config()
+    response = requests.post(
+        "https://oauth2.googleapis.com/token",
+        data={
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "refresh_token": record.refresh_token,
+            "grant_type": "refresh_token",
+        },
+        timeout=20,
+    )
+    if not response.ok:
+        raise HTTPException(status_code=502, detail="Nie udaĹ‚o siÄ™ odĹ›wieĹĽyÄ‡ tokenu Google")
+    data = response.json()
+    record.access_token = data.get("access_token", record.access_token)
+    expires_in = data.get("expires_in")
+    if expires_in:
+        record.expires_at = datetime.datetime.utcnow() + datetime.timedelta(seconds=int(expires_in))
+    record.token_type = data.get("token_type", record.token_type)
+    record.scope = data.get("scope", record.scope)
+    db.commit()
+    db.refresh(record)
+    return record.access_token
+
+
+def google_api_request(
+    db: Session,
+    record: GoogleCalendarDB,
+    method: str,
+    url: str,
+    params: Optional[dict] = None,
+    payload: Optional[dict] = None,
+    timeout: int = 20,
+) -> requests.Response:
+    token = refresh_google_access_token(db, record)
+    headers = {"Authorization": f"Bearer {token}"}
+    response = requests.request(
+        method=method,
+        url=url,
+        params=params,
+        json=payload,
+        headers=headers,
+        timeout=timeout,
+    )
+    if response.status_code == 401:
+        token = refresh_google_access_token(db, record)
+        headers["Authorization"] = f"Bearer {token}"
+        response = requests.request(
+            method=method,
+            url=url,
+            params=params,
+            json=payload,
+            headers=headers,
+            timeout=timeout,
+        )
+    return response
+
+
 def require_admin(user: UserDB = Depends(get_current_user)) -> UserDB:
     if not user.is_admin:
         raise HTTPException(
@@ -235,6 +347,47 @@ class AdminUserUpdate(BaseModel):
 class AdminUserCreateResponse(BaseModel):
     user: UserResponse
     temporary_password: Optional[str] = None
+
+
+class GoogleStatusResponse(BaseModel):
+    connected: bool
+    calendar_id: Optional[str] = None
+    calendar_summary: Optional[str] = None
+
+
+class GoogleAuthUrlResponse(BaseModel):
+    url: str
+
+
+class GoogleCalendarItem(BaseModel):
+    id: str
+    summary: str
+    primary: Optional[bool] = None
+
+
+class GoogleCalendarListResponse(BaseModel):
+    calendars: List[GoogleCalendarItem]
+
+
+class GoogleCalendarSelectRequest(BaseModel):
+    calendar_id: str
+
+
+class GoogleSyncEvent(BaseModel):
+    recipe_id: int
+    date: str
+    portions: int = 1
+
+
+class GoogleSyncRequest(BaseModel):
+    calendar_id: Optional[str] = None
+    events: List[GoogleSyncEvent]
+
+
+class GoogleSyncResponse(BaseModel):
+    created: int
+    deleted: int
+    calendar_id: str
 
 
 class RecipeInput(BaseModel):
@@ -484,6 +637,258 @@ async def login(payload: LoginRequest, db: Session = Depends(get_db)):
 @app.get("/api/auth/me", response_model=UserResponse, tags=["Auth"])
 async def get_me(current_user: UserDB = Depends(get_current_user)):
     return current_user
+
+
+# --- GOOGLE CALENDAR ---
+@app.get("/api/google/status", response_model=GoogleStatusResponse, tags=["Google"])
+async def google_status(current_user: UserDB = Depends(get_current_user), db: Session = Depends(get_db)):
+    record = db.query(GoogleCalendarDB).filter(GoogleCalendarDB.owner_id == current_user.id).first()
+    if not record:
+        return GoogleStatusResponse(connected=False)
+    return GoogleStatusResponse(
+        connected=True,
+        calendar_id=record.calendar_id,
+        calendar_summary=record.calendar_summary,
+    )
+
+
+@app.get("/api/google/oauth/start", response_model=GoogleAuthUrlResponse, tags=["Google"])
+async def google_oauth_start(current_user: UserDB = Depends(get_current_user)):
+    ensure_google_config()
+    state = create_google_state_token(current_user.id)
+    params = {
+        "client_id": GOOGLE_CLIENT_ID,
+        "redirect_uri": GOOGLE_REDIRECT_URI,
+        "response_type": "code",
+        "scope": " ".join(GOOGLE_SCOPES),
+        "access_type": "offline",
+        "prompt": "consent",
+        "include_granted_scopes": "true",
+        "state": state,
+    }
+    url = "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
+    return GoogleAuthUrlResponse(url=url)
+
+
+@app.get("/api/google/oauth/callback", tags=["Google"])
+async def google_oauth_callback(code: str, state: str, db: Session = Depends(get_db)):
+    ensure_google_config()
+    user_id = decode_google_state_token(state)
+    user = db.query(UserDB).filter(UserDB.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="UĹĽytkownik nie znaleziony")
+
+    response = requests.post(
+        "https://oauth2.googleapis.com/token",
+        data={
+            "code": code,
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "redirect_uri": GOOGLE_REDIRECT_URI,
+            "grant_type": "authorization_code",
+        },
+        timeout=20,
+    )
+    if not response.ok:
+        raise HTTPException(status_code=502, detail="Nie udaĹ‚o siÄ™ poĹ‚Ä…czyÄ‡ z Google")
+
+    data = response.json()
+    expires_in = data.get("expires_in")
+    expires_at = None
+    if expires_in:
+        expires_at = datetime.datetime.utcnow() + datetime.timedelta(seconds=int(expires_in))
+
+    record = db.query(GoogleCalendarDB).filter(GoogleCalendarDB.owner_id == user.id).first()
+    if record:
+        record.access_token = data.get("access_token", record.access_token)
+        record.refresh_token = data.get("refresh_token") or record.refresh_token
+        record.token_type = data.get("token_type", record.token_type)
+        record.scope = data.get("scope", record.scope)
+        record.expires_at = expires_at
+    else:
+        record = GoogleCalendarDB(
+            owner_id=user.id,
+            access_token=data.get("access_token"),
+            refresh_token=data.get("refresh_token"),
+            token_type=data.get("token_type"),
+            scope=data.get("scope"),
+            expires_at=expires_at,
+        )
+        db.add(record)
+
+    db.commit()
+
+    if FRONTEND_URL:
+        return Response(status_code=302, headers={"Location": f"{FRONTEND_URL}?google=connected"})
+    return Response(
+        content="PoĹ‚Ä…czono z Google Calendar. MoĹĽesz wrĂłciÄ‡ do aplikacji.",
+        media_type="text/html",
+    )
+
+
+@app.get("/api/google/calendars", response_model=GoogleCalendarListResponse, tags=["Google"])
+async def google_calendars(current_user: UserDB = Depends(get_current_user), db: Session = Depends(get_db)):
+    record = get_google_token_record(db, current_user.id)
+    response = google_api_request(
+        db,
+        record,
+        "GET",
+        "https://www.googleapis.com/calendar/v3/users/me/calendarList",
+    )
+    if not response.ok:
+        raise HTTPException(status_code=502, detail="Nie udaĹ‚o siÄ™ pobraÄ‡ kalendarzy")
+    data = response.json()
+    calendars = [
+        GoogleCalendarItem(
+            id=item.get("id"),
+            summary=item.get("summary", "Bez nazwy"),
+            primary=item.get("primary"),
+        )
+        for item in data.get("items", [])
+    ]
+    return GoogleCalendarListResponse(calendars=calendars)
+
+
+@app.post("/api/google/calendar/select", response_model=GoogleStatusResponse, tags=["Google"])
+async def google_calendar_select(
+    payload: GoogleCalendarSelectRequest,
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    record = get_google_token_record(db, current_user.id)
+    response = google_api_request(
+        db,
+        record,
+        "GET",
+        f"https://www.googleapis.com/calendar/v3/users/me/calendarList/{payload.calendar_id}",
+    )
+    if not response.ok:
+        raise HTTPException(status_code=400, detail="Nie znaleziono kalendarza lub brak uprawnieĹ„")
+    data = response.json()
+    record.calendar_id = payload.calendar_id
+    record.calendar_summary = data.get("summary")
+    db.commit()
+    db.refresh(record)
+    return GoogleStatusResponse(
+        connected=True,
+        calendar_id=record.calendar_id,
+        calendar_summary=record.calendar_summary,
+    )
+
+
+@app.post("/api/google/plan/sync", response_model=GoogleSyncResponse, tags=["Google"])
+async def google_plan_sync(
+    payload: GoogleSyncRequest,
+    current_user: UserDB = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not payload.events:
+        raise HTTPException(status_code=400, detail="Brak wydarzeĹ„ do synchronizacji")
+
+    record = get_google_token_record(db, current_user.id)
+    calendar_id = payload.calendar_id or record.calendar_id
+    if not calendar_id:
+        raise HTTPException(status_code=400, detail="Najpierw wybierz kalendarz")
+    if payload.calendar_id and payload.calendar_id != record.calendar_id:
+        record.calendar_id = payload.calendar_id
+        db.commit()
+
+    unique_events = {}
+    for event in payload.events:
+        unique_events[(event.recipe_id, event.date)] = event
+    events = list(unique_events.values())
+
+    dates = []
+    for event in events:
+        try:
+            dates.append(datetime.date.fromisoformat(event.date))
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"NieprawidĹ‚owa data: {event.date}")
+
+    date_min = min(dates)
+    date_max = max(dates)
+    time_min = f"{date_min.isoformat()}T00:00:00Z"
+    time_max = f"{(date_max + datetime.timedelta(days=1)).isoformat()}T00:00:00Z"
+
+    # delete existing KitchenOS events in range
+    deleted = 0
+    page_token = None
+    while True:
+        params = {
+            "timeMin": time_min,
+            "timeMax": time_max,
+            "singleEvents": "true",
+            "maxResults": 2500,
+            "privateExtendedProperty": f"kitchenos_user_id={current_user.id}",
+        }
+        if page_token:
+            params["pageToken"] = page_token
+        response = google_api_request(
+            db,
+            record,
+            "GET",
+            f"https://www.googleapis.com/calendar/v3/calendars/{calendar_id}/events",
+            params=params,
+        )
+        if not response.ok:
+            raise HTTPException(status_code=502, detail="Nie udaĹ‚o siÄ™ pobraÄ‡ wydarzeĹ„ z Google")
+        data = response.json()
+        for item in data.get("items", []):
+            event_id = item.get("id")
+            if not event_id:
+                continue
+            delete_response = google_api_request(
+                db,
+                record,
+                "DELETE",
+                f"https://www.googleapis.com/calendar/v3/calendars/{calendar_id}/events/{event_id}",
+            )
+            if delete_response.ok:
+                deleted += 1
+        page_token = data.get("nextPageToken")
+        if not page_token:
+            break
+
+    created = 0
+    for event in events:
+        recipe = (
+            db.query(RecipeDB)
+            .filter(RecipeDB.id == event.recipe_id, RecipeDB.owner_id == current_user.id)
+            .first()
+        )
+        if not recipe:
+            continue
+        event_date = datetime.date.fromisoformat(event.date)
+        description_lines = [f"Porcje: {event.portions}"]
+        if recipe.ingredients:
+            ingredients = recipe.ingredients[:12]
+            suffix = "..." if len(recipe.ingredients) > 12 else ""
+            description_lines.append("Skladniki: " + ", ".join(ingredients) + suffix)
+        if recipe.url and not recipe.url.startswith("custom:"):
+            description_lines.append(f"Link: {recipe.url}")
+        body = {
+            "summary": recipe.title,
+            "description": "\n".join(description_lines),
+            "start": {"date": event_date.isoformat()},
+            "end": {"date": (event_date + datetime.timedelta(days=1)).isoformat()},
+            "extendedProperties": {
+                "private": {
+                    "kitchenos_user_id": str(current_user.id),
+                    "kitchenos_source": "planner",
+                }
+            },
+        }
+        response = google_api_request(
+            db,
+            record,
+            "POST",
+            f"https://www.googleapis.com/calendar/v3/calendars/{calendar_id}/events",
+            payload=body,
+        )
+        if response.ok:
+            created += 1
+
+    return GoogleSyncResponse(created=created, deleted=deleted, calendar_id=calendar_id)
 
 
 # --- ADMIN ---

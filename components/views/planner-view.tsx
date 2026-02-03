@@ -1,10 +1,23 @@
 'use client'
 
-import { useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Minus, Plus, Trash2, ShoppingCart, Users, CalendarDays, UtensilsCrossed, PlusCircle } from 'lucide-react'
-import { RECIPE_CATEGORIES, type PlannerRecipe, type RecipeCategory } from '@/lib/api'
+import {
+  fetchGoogleAuthUrl,
+  fetchGoogleCalendars,
+  fetchGoogleStatus,
+  selectGoogleCalendar,
+  syncGooglePlan,
+  RECIPE_CATEGORIES,
+  type PlannerRecipe,
+  type RecipeCategory,
+  type GoogleCalendarItem,
+  type GoogleStatus,
+  type GoogleSyncEvent,
+} from '@/lib/api'
 import { getNextAvailableDay } from '@/lib/planner-utils'
 import { EmptyState } from '@/components/empty-state'
+import { useToast } from '@/components/toast-provider'
 
 interface PlannerViewProps {
   plannerRecipes: PlannerRecipe[]
@@ -42,6 +55,13 @@ const getAssignedDays = (recipe: PlannerRecipe) => {
     return [recipe.assignedDay]
   }
   return []
+}
+
+const formatCalendarDate = (date: Date) => {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
 }
 
 function getWeekDays(): DayInfo[] {
@@ -99,6 +119,13 @@ export function PlannerView({
   isGenerating,
   onAssignDay,
 }: PlannerViewProps) {
+  const { showToast } = useToast()
+  const [googleStatus, setGoogleStatus] = useState<GoogleStatus | null>(null)
+  const [googleCalendars, setGoogleCalendars] = useState<GoogleCalendarItem[]>([])
+  const [selectedCalendarId, setSelectedCalendarId] = useState('')
+  const [isGoogleBusy, setIsGoogleBusy] = useState(false)
+  const [isSyncing, setIsSyncing] = useState(false)
+  const hasLoadedCalendars = useRef(false)
   const totalPortions = plannerRecipes.reduce((sum, r) => {
     const dayCount = getAssignedDays(r).length || 1
     return sum + r.portions * dayCount
@@ -133,6 +160,110 @@ export function PlannerView({
     
     return grouped
   }, [plannerRecipes, weekDays])
+
+  const googleEvents = useMemo<GoogleSyncEvent[]>(() => {
+    if (plannerRecipes.length === 0) return []
+    const dateByDay = new Map(weekDays.map((day) => [day.name, day.date]))
+    const seen = new Set<string>()
+    const events: GoogleSyncEvent[] = []
+
+    plannerRecipes.forEach((recipe) => {
+      const assignedDays = getAssignedDays(recipe)
+      assignedDays.forEach((day) => {
+        const date = dateByDay.get(day)
+        if (!date) return
+        const dateString = formatCalendarDate(date)
+        const key = `${recipe.id}-${dateString}`
+        if (seen.has(key)) return
+        seen.add(key)
+        events.push({ recipe_id: recipe.id, date: dateString, portions: recipe.portions })
+      })
+    })
+
+    return events
+  }, [plannerRecipes, weekDays])
+
+  useEffect(() => {
+    let mounted = true
+    fetchGoogleStatus()
+      .then((status) => {
+        if (!mounted) return
+        setGoogleStatus(status)
+        setSelectedCalendarId(status.calendar_id ?? '')
+      })
+      .catch(() => undefined)
+    return () => {
+      mounted = false
+    }
+  }, [])
+
+  const handleConnectGoogle = async () => {
+    setIsGoogleBusy(true)
+    try {
+      const data = await fetchGoogleAuthUrl()
+      window.location.href = data.url
+    } catch {
+      showToast('Nie udało się rozpocząć logowania Google', 'error')
+      setIsGoogleBusy(false)
+    }
+  }
+
+  const handleLoadCalendars = useCallback(async () => {
+    setIsGoogleBusy(true)
+    try {
+      const calendars = await fetchGoogleCalendars()
+      setGoogleCalendars(calendars)
+      hasLoadedCalendars.current = true
+      if (!selectedCalendarId && calendars.length === 1) {
+        setSelectedCalendarId(calendars[0].id)
+      }
+    } catch {
+      showToast('Nie udało się pobrać listy kalendarzy', 'error')
+    } finally {
+      setIsGoogleBusy(false)
+    }
+  }, [selectedCalendarId, showToast])
+
+  useEffect(() => {
+    if (!googleStatus?.connected) return
+    if (hasLoadedCalendars.current) return
+    void handleLoadCalendars()
+  }, [googleStatus, handleLoadCalendars])
+
+  const handleSelectCalendar = async (calendarId: string) => {
+    setSelectedCalendarId(calendarId)
+    if (!calendarId) return
+    setIsGoogleBusy(true)
+    try {
+      const status = await selectGoogleCalendar(calendarId)
+      setGoogleStatus(status)
+      showToast('Kalendarz zapisany', 'success')
+    } catch {
+      showToast('Nie udało się zapisać kalendarza', 'error')
+    } finally {
+      setIsGoogleBusy(false)
+    }
+  }
+
+  const handleSyncGoogle = async () => {
+    if (googleEvents.length === 0) {
+      showToast('Najpierw przypisz posiłki do dni', 'info')
+      return
+    }
+    if (!selectedCalendarId) {
+      showToast('Wybierz kalendarz Google', 'info')
+      return
+    }
+    setIsSyncing(true)
+    try {
+      const result = await syncGooglePlan(selectedCalendarId, googleEvents)
+      showToast(`Zapisano ${result.created} wydarzeń`, 'success')
+    } catch {
+      showToast('Nie udało się zsynchronizować kalendarza', 'error')
+    } finally {
+      setIsSyncing(false)
+    }
+  }
 
   return (
     <div className="space-y-6 overflow-x-hidden">
@@ -384,25 +515,92 @@ export function PlannerView({
         />
       )}
 
-      {/* Generate Button */}
+      {/* Actions */}
       {plannerRecipes.length > 0 && (
-        <button
-          onClick={onGenerateShoppingList}
-          disabled={isGenerating}
-          className="flex w-full items-center justify-center gap-3 rounded-2xl bg-primary py-4 font-semibold text-primary-foreground transition-all hover:bg-primary/90 disabled:opacity-50"
-        >
-          {isGenerating ? (
-            <>
-              <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary-foreground/20 border-t-primary-foreground" />
-              <span>Generowanie listy...</span>
-            </>
-          ) : (
-            <>
-              <ShoppingCart className="h-5 w-5" />
-              <span>Generuj Listę Zakupów</span>
-            </>
-          )}
-        </button>
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-border bg-card px-4 py-4 shadow-sm">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center gap-3">
+                <CalendarDays className="h-5 w-5 icon-sky" />
+                <div>
+                  <p className="text-sm font-semibold text-foreground">Google Calendar</p>
+                  <p className="text-xs text-muted-foreground">
+                    Synchronizuj plan do wybranego kalendarza (np. "Obiady").
+                  </p>
+                </div>
+              </div>
+              {!googleStatus?.connected ? (
+                <button
+                  type="button"
+                  onClick={handleConnectGoogle}
+                  disabled={isGoogleBusy}
+                  className="rounded-full border border-border bg-background px-4 py-2 text-sm font-semibold text-foreground transition-colors hover:border-primary/40 hover:text-primary disabled:opacity-60"
+                >
+                  {'Po\u0142\u0105cz Google'}
+                </button>
+              ) : (
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleLoadCalendars}
+                    disabled={isGoogleBusy}
+                    className="rounded-full border border-border bg-background px-3 py-2 text-xs font-semibold text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary disabled:opacity-60"
+                  >
+                    {'Od\u015bwie\u017c list\u0119'}
+                  </button>
+                  <select
+                    value={selectedCalendarId}
+                    onChange={(event) => handleSelectCalendar(event.target.value)}
+                    disabled={isGoogleBusy}
+                    className="rounded-full border border-border bg-background px-3 py-2 text-xs font-semibold text-foreground transition-colors focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:opacity-60"
+                  >
+                    <option value="">Wybierz kalendarz</option>
+                    {googleCalendars.map((calendar) => (
+                      <option key={calendar.id} value={calendar.id}>
+                        {calendar.summary}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={handleSyncGoogle}
+                    disabled={isSyncing || isGoogleBusy || googleEvents.length === 0}
+                    className="rounded-full border border-primary bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-60"
+                  >
+                    {isSyncing ? 'Synchronizacja...' : 'Wy\u015blij plan'}
+                  </button>
+                </div>
+              )}
+            </div>
+            {googleStatus?.connected && !isGoogleBusy && googleCalendars.length === 0 && (
+              <p className="mt-2 text-xs text-muted-foreground">
+                Nie widzę kalendarzy. Kliknij {'Od\u015bwie\u017c list\u0119'} albo sprawdź, czy masz kalendarze w Google.
+              </p>
+            )}
+            {googleStatus?.connected && googleStatus.calendar_summary && (
+              <p className="mt-3 text-xs text-muted-foreground">
+                Wybrany kalendarz: <span className="font-semibold text-foreground">{googleStatus.calendar_summary}</span>
+              </p>
+            )}
+          </div>
+          <button
+            onClick={onGenerateShoppingList}
+            disabled={isGenerating}
+            className="flex w-full items-center justify-center gap-3 rounded-2xl bg-primary py-4 font-semibold text-primary-foreground transition-all hover:bg-primary/90 disabled:opacity-50"
+          >
+            {isGenerating ? (
+              <>
+                <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary-foreground/20 border-t-primary-foreground" />
+                <span>Generowanie listy...</span>
+              </>
+            ) : (
+              <>
+                <ShoppingCart className="h-5 w-5" />
+                <span>{'Generuj List\u0119 Zakup\u00f3w'}</span>
+              </>
+            )}
+          </button>
+        </div>
       )}
     </div>
   )

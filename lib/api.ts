@@ -107,6 +107,38 @@ export interface AuthTokenResponse {
   expires_in_days: number
 }
 
+export interface GoogleStatus {
+  connected: boolean
+  calendar_id?: string | null
+  calendar_summary?: string | null
+}
+
+export interface GoogleAuthUrlResponse {
+  url: string
+}
+
+export interface GoogleCalendarItem {
+  id: string
+  summary: string
+  primary?: boolean
+}
+
+export interface GoogleCalendarListResponse {
+  calendars: GoogleCalendarItem[]
+}
+
+export interface GoogleSyncEvent {
+  recipe_id: number
+  date: string
+  portions: number
+}
+
+export interface GoogleSyncResponse {
+  created: number
+  deleted: number
+  calendar_id: string
+}
+
 export interface AdminUserCreateResponse {
   user: AuthUser
   temporary_password?: string | null
@@ -256,6 +288,56 @@ export async function generateShoppingList(
   }
   const data = (await response.json()) as ShoppingListResponse
   return normalizeShoppingList(data)
+}
+
+export async function fetchGoogleStatus(): Promise<GoogleStatus> {
+  const response = await apiFetch('/api/google/status')
+  if (!response.ok) {
+    throw new Error('Failed to fetch Google status')
+  }
+  return response.json()
+}
+
+export async function fetchGoogleAuthUrl(): Promise<GoogleAuthUrlResponse> {
+  const response = await apiFetch('/api/google/oauth/start')
+  if (!response.ok) {
+    throw new Error('Failed to start Google OAuth')
+  }
+  return response.json()
+}
+
+export async function fetchGoogleCalendars(): Promise<GoogleCalendarItem[]> {
+  const response = await apiFetch('/api/google/calendars')
+  if (!response.ok) {
+    throw new Error('Failed to fetch Google calendars')
+  }
+  const data = (await response.json()) as GoogleCalendarListResponse
+  return data.calendars ?? []
+}
+
+export async function selectGoogleCalendar(calendar_id: string): Promise<GoogleStatus> {
+  const response = await apiFetch('/api/google/calendar/select', {
+    method: 'POST',
+    body: JSON.stringify({ calendar_id }),
+  })
+  if (!response.ok) {
+    throw new Error('Failed to select Google calendar')
+  }
+  return response.json()
+}
+
+export async function syncGooglePlan(
+  calendar_id: string | null,
+  events: GoogleSyncEvent[]
+): Promise<GoogleSyncResponse> {
+  const response = await apiFetch('/api/google/plan/sync', {
+    method: 'POST',
+    body: JSON.stringify({ calendar_id, events }),
+  })
+  if (!response.ok) {
+    throw new Error('Failed to sync Google Calendar')
+  }
+  return response.json()
 }
 
 export async function deleteRecipe(id: number): Promise<void> {

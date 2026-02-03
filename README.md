@@ -20,6 +20,11 @@ Edit `backend/.env`:
 - `JWT_SECRET_KEY` is required
 - `ADMIN_BOOTSTRAP_TOKEN` is optional (only for first admin)
 - `DATABASE_URL` is optional (defaults to SQLite)
+- Google Calendar (optional, sync plan to Google):
+  - `GOOGLE_CLIENT_ID`
+  - `GOOGLE_CLIENT_SECRET`
+  - `GOOGLE_REDIRECT_URI` (e.g. `http://localhost:8000/api/google/oauth/callback`)
+  - `FRONTEND_URL` (e.g. `http://localhost:3000`)
 
 Run migrations:
 ```
@@ -71,6 +76,8 @@ one for the backend and one for the frontend.
      - `ADMIN_BOOTSTRAP_TOKEN` (optional, first admin)
      - `ALLOWED_ORIGINS` = your frontend URL
      - `GROQ_API_KEY` (optional, enables AI)
+     - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REDIRECT_URI` (optional, Google Calendar sync)
+     - `FRONTEND_URL` (needed for OAuth redirect)
    - Procfile runs migrations on start:
      - `web` runs `alembic upgrade head` then Uvicorn on `$PORT`
    - If Railway uses Python 3.13, add:

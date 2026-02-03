@@ -81,3 +81,22 @@ class ParseLogDB(Base):
     status = Column(String, nullable=False)
     error_message = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+
+
+class GoogleCalendarDB(Base):
+    __tablename__ = "google_calendar_tokens"
+    __table_args__ = (UniqueConstraint("owner_id", name="uq_google_calendar_owner"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    owner_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False)
+    access_token = Column(Text, nullable=False)
+    refresh_token = Column(Text, nullable=True)
+    token_type = Column(String, nullable=True)
+    scope = Column(Text, nullable=True)
+    expires_at = Column(DateTime, nullable=True)
+    calendar_id = Column(String, nullable=True)
+    calendar_summary = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+    updated_at = Column(
+        DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow
+    )
