@@ -4,6 +4,8 @@ export const GENERIC_RECIPE_IMAGE_URL = 'https://cdn-icons-png.flaticon.com/512/
 
 const PLACEHOLDER_MAP: Record<RecipeCategory, string> = {
   obiady: '/recipe-placeholders/soup.svg',
+  sniadania: '/recipe-placeholders/bread.svg',
+  lunchbox: '/recipe-placeholders/default.svg',
   salatki: '/recipe-placeholders/salad.svg',
   pieczywo: '/recipe-placeholders/bread.svg',
   desery: '/recipe-placeholders/dessert.svg',
@@ -16,8 +18,16 @@ const CATEGORY_HINTS: Array<{ category: RecipeCategory; pattern: RegExp }> = [
     pattern: /(deser|ciasto|tort|babeczka|muffin|pudding|krem|szarlotka|sernik|brownie)/i,
   },
   {
+    category: 'lunchbox',
+    pattern: /(lunch|lunchbox|bento|do pracy|na wynos|box)/i,
+  },
+  {
     category: 'salatki',
     pattern: /(sa\u0142at|salat|salad|rukola)/i,
+  },
+  {
+    category: 'sniadania',
+    pattern: /(sniad|\u015bniad|breakfast|owsianka|omlet|jajecznic|kanapk)/i,
   },
   {
     category: 'pieczywo',

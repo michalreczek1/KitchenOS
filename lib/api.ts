@@ -56,10 +56,12 @@ const apiFetch = async (path: string, options: RequestInit = {}) => {
   return response
 }
 
-export type RecipeCategory = 'obiady' | 'salatki' | 'pieczywo' | 'desery' | 'inne'
+export type RecipeCategory = 'obiady' | 'sniadania' | 'lunchbox' | 'salatki' | 'pieczywo' | 'desery' | 'inne'
 
 export const RECIPE_CATEGORIES: { value: RecipeCategory; label: string }[] = [
   { value: 'obiady', label: 'Obiady' },
+  { value: 'sniadania', label: 'Śniadania' },
+  { value: 'lunchbox', label: 'Lunchbox' },
   { value: 'salatki', label: 'Sałatki' },
   { value: 'pieczywo', label: 'Pieczywo' },
   { value: 'desery', label: 'Desery' },
@@ -374,6 +376,31 @@ export async function login(email: string, password: string): Promise<AuthTokenR
     throw new Error(data?.detail || 'Failed to login')
   }
   return response.json()
+}
+
+export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+  const response = await apiFetch('/api/auth/change-password', {
+    method: 'POST',
+    body: JSON.stringify({
+      current_password: currentPassword,
+      new_password: newPassword,
+    }),
+  })
+  if (!response.ok) {
+    const data = await response.json().catch(() => null)
+    throw new Error(data?.detail || 'Failed to change password')
+  }
+}
+
+export async function deleteAccount(password: string): Promise<void> {
+  const response = await apiFetch('/api/auth/delete-account', {
+    method: 'POST',
+    body: JSON.stringify({ password }),
+  })
+  if (!response.ok) {
+    const data = await response.json().catch(() => null)
+    throw new Error(data?.detail || 'Failed to delete account')
+  }
 }
 
 export async function registerAccount(payload: {

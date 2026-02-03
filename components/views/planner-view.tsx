@@ -15,6 +15,7 @@ import {
   type GoogleStatus,
   type GoogleSyncEvent,
 } from '@/lib/api'
+import { GENERIC_RECIPE_IMAGE_URL, getCustomRecipePlaceholder } from '@/lib/recipe-placeholders'
 import { getNextAvailableDay } from '@/lib/planner-utils'
 import { EmptyState } from '@/components/empty-state'
 import { useToast } from '@/components/toast-provider'
@@ -41,11 +42,15 @@ const CATEGORY_LABELS = new Map(RECIPE_CATEGORIES.map((category) => [category.va
 
 const CATEGORY_STYLES: Record<RecipeCategory, string> = {
   obiady: 'border-amber-200 bg-amber-100/70 text-amber-700',
+  sniadania: 'border-sky-200 bg-sky-100/70 text-sky-700',
+  lunchbox: 'border-violet-200 bg-violet-100/70 text-violet-700',
   salatki: 'border-emerald-200 bg-emerald-100/70 text-emerald-700',
   pieczywo: 'border-yellow-200 bg-yellow-100/70 text-yellow-800',
   desery: 'border-rose-200 bg-rose-100/70 text-rose-700',
   inne: 'border-slate-200 bg-slate-100/70 text-slate-700',
 }
+
+const isHttpUrl = (value?: string) => typeof value === 'string' && /^https?:\/\//i.test(value)
 
 const getAssignedDays = (recipe: PlannerRecipe) => {
   if (Array.isArray(recipe.assignedDays) && recipe.assignedDays.length > 0) {
@@ -62,6 +67,14 @@ const formatCalendarDate = (date: Date) => {
   const month = String(date.getMonth() + 1).padStart(2, '0')
   const day = String(date.getDate()).padStart(2, '0')
   return `${year}-${month}-${day}`
+}
+
+const getPlannerImage = (recipe: PlannerRecipe) => {
+  const sourceUrl = recipe.source_url
+  const isCustom = !isHttpUrl(sourceUrl)
+  const isGenericImage = recipe.image_url === GENERIC_RECIPE_IMAGE_URL
+  const placeholderImage = isCustom ? getCustomRecipePlaceholder(recipe.category, recipe.title) : undefined
+  return recipe.image_url && !isGenericImage ? recipe.image_url : placeholderImage
 }
 
 function getWeekDays(): DayInfo[] {
@@ -326,6 +339,7 @@ export function PlannerView({
                     : 'border-border bg-muted text-muted-foreground'
                   const nextDay = getNextAvailableDay(assignedDays, weekDayNames, day.name)
                   const nextDayLabel = nextDay ? shortNameByDay.get(nextDay) ?? nextDay : null
+                  const displayImage = getPlannerImage(recipe)
 
                   return (
                     <div
@@ -334,9 +348,9 @@ export function PlannerView({
                     >
                       <div className="mb-2 flex items-start gap-2">
                         <div className="relative h-10 w-10 flex-shrink-0 overflow-hidden rounded-lg bg-muted">
-                          {recipe.image_url ? (
+                          {displayImage ? (
                             <img
-                              src={recipe.image_url || "/placeholder.svg"}
+                              src={displayImage || "/placeholder.svg"}
                               alt={recipe.title}
                               className="h-full w-full object-cover"
                             />
@@ -423,15 +437,16 @@ export function PlannerView({
               const categoryStyle = recipe.category
                 ? CATEGORY_STYLES[recipe.category] ?? 'border-border bg-muted text-muted-foreground'
                 : 'border-border bg-muted text-muted-foreground'
+              const displayImage = getPlannerImage(recipe)
               return (
                 <div
                   key={recipe.id}
                   className="min-w-0 flex flex-col gap-4 rounded-xl border border-border bg-secondary/30 p-3 sm:flex-row sm:items-center"
                 >
                 <div className="relative h-16 w-full overflow-hidden rounded-lg bg-muted sm:h-12 sm:w-20 sm:flex-shrink-0">
-                  {recipe.image_url ? (
+                  {displayImage ? (
                     <img
-                      src={recipe.image_url || "/placeholder.svg"}
+                      src={displayImage || "/placeholder.svg"}
                       alt={recipe.title}
                       className="h-full w-full object-cover"
                     />
