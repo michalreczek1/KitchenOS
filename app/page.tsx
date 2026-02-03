@@ -12,6 +12,7 @@ import { AddRecipeView } from '@/components/views/add-recipe-view'
 import { PlannerView } from '@/components/views/planner-view'
 import { ShoppingView } from '@/components/views/shopping-view'
 import { AdminView } from '@/components/views/admin-view'
+import { InspirationsView } from '@/components/views/inspirations-view'
 import {
   fetchRecipes,
   fetchStats,
@@ -57,7 +58,7 @@ const buildPlannerSignature = (recipes: PlannerRecipe[]) => {
   return JSON.stringify(payload)
 }
 
-type View = 'dashboard' | 'recipes' | 'add' | 'planner' | 'shopping' | 'admin'
+type View = 'dashboard' | 'recipes' | 'add' | 'planner' | 'shopping' | 'inspiracje' | 'admin'
 
 function KitchenOSApp({ user, onLogout }: { user: AuthUser; onLogout: () => void }) {
   const [currentView, setCurrentView] = useState<View>('dashboard')
@@ -446,6 +447,10 @@ function KitchenOSApp({ user, onLogout }: { user: AuthUser; onLogout: () => void
               isStale={shoppingListMeta?.isStale ?? false}
               userId={user.id}
             />
+          )}
+
+          {currentView === 'inspiracje' && (
+            <InspirationsView onRecipeSaved={handleRecipeAdded} />
           )}
 
           {currentView === 'admin' && user.is_admin && <AdminView />}

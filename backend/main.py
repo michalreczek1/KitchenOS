@@ -6,10 +6,10 @@ import json
 import uuid
 import secrets
 from urllib.parse import urlparse, urlencode
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Depends, status, Body
 from fastapi.security import OAuth2PasswordBearer
-from pydantic import BaseModel, HttpUrl, Field, EmailStr
-from typing import List, Optional
+from pydantic import BaseModel, HttpUrl, Field, EmailStr, ValidationError
+from typing import List, Optional, Any
 from recipe_scrapers import scrape_html
 from groq import Groq
 from jose import jwt, JWTError
@@ -331,6 +331,36 @@ class RegisterRequest(BaseModel):
     last_name: str = Field(..., min_length=1, max_length=100)
     email: EmailStr
     password: str = Field(..., min_length=6, max_length=128)
+
+
+class InspireRequest(BaseModel):
+    ingredients: List[str] = Field(..., min_items=1)
+
+
+class InspireIngredient(BaseModel):
+    item: str
+    amount: str = ""
+    is_extra: bool = False
+
+
+class InspireRecipeResponse(BaseModel):
+    title: str
+    description: Optional[str] = None
+    difficulty: Optional[str] = None
+    prep_time: Optional[str] = None
+    ingredients: List[InspireIngredient]
+    instructions: List[str]
+    tips: Optional[str] = None
+
+
+class RecipeCreateRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=200)
+    ingredients: List[InspireIngredient] | List[str] = Field(..., min_items=1)
+    instructions: List[str] | str
+    description: Optional[str] = None
+    prep_time: Optional[str] = None
+    difficulty: Optional[str] = None
+    base_portions: Optional[int] = 1
 
 
 class ChangePasswordRequest(BaseModel):
@@ -1607,6 +1637,203 @@ ZWROT (tylko JSON):
             status_code=500,
             detail="AI nie poradziło sobie z tekstem. Spróbuj formatu: 'Tytuł\\nSkładniki...\\nInstrukcje...'",
         )
+
+def _normalize_inspire_ingredients(raw: Any) -> List[str]:
+    ingredients: List[str] = []
+    if isinstance(raw, list):
+        for item in raw:
+            text = str(item or "").strip()
+            if text:
+                ingredients.append(text)
+    elif isinstance(raw, dict):
+        value = raw.get("ingredients")
+        if isinstance(value, list):
+            for item in value:
+                text = str(item or "").strip()
+                if text:
+                    ingredients.append(text)
+    return ingredients
+
+
+def _normalize_instruction_list(raw: Any) -> List[str]:
+    if isinstance(raw, list):
+        return [str(item).strip() for item in raw if str(item).strip()]
+    if isinstance(raw, str):
+        return [line.strip() for line in re.split(r"[\\r\\n]+", raw) if line.strip()]
+    return []
+
+
+def _build_inspire_response(payload: dict, user_ingredients: List[str]) -> InspireRecipeResponse:
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=502, detail="AI zwrĂłciĹ‚o nieprawidĹ‚owe dane")
+
+    title = str(payload.get("title") or "Inspiracja z lodĂłwki").strip()
+    description = str(payload.get("description") or "").strip() or None
+    difficulty = str(payload.get("difficulty") or "").strip() or None
+    prep_time = str(payload.get("prep_time") or "").strip() or None
+    tips = str(payload.get("tips") or "").strip() or None
+
+    normalized_user = {item.lower().strip() for item in user_ingredients if item.strip()}
+    ingredients_raw = payload.get("ingredients") or []
+    ingredients: List[InspireIngredient] = []
+    if isinstance(ingredients_raw, list):
+        for entry in ingredients_raw:
+            if isinstance(entry, dict):
+                item_name = str(entry.get("item") or "").strip()
+                amount = str(entry.get("amount") or "").strip()
+                is_extra = bool(entry.get("is_extra", False))
+            else:
+                item_name = str(entry or "").strip()
+                amount = ""
+                is_extra = False
+
+            if not item_name:
+                continue
+            if not is_extra:
+                is_extra = item_name.lower().strip() not in normalized_user
+            ingredients.append(
+                InspireIngredient(item=item_name, amount=amount, is_extra=is_extra)
+            )
+
+    instructions = _normalize_instruction_list(payload.get("instructions"))
+    if not ingredients or not instructions:
+        raise HTTPException(status_code=502, detail="AI zwrĂłciĹ‚o niekompletny przepis")
+
+    return InspireRecipeResponse(
+        title=title,
+        description=description,
+        difficulty=difficulty,
+        prep_time=prep_time,
+        ingredients=ingredients,
+        instructions=instructions,
+        tips=tips,
+    )
+
+
+@app.post("/api/ai/inspire", response_model=InspireRecipeResponse, tags=["AI"])
+async def inspire_recipe(
+    raw_payload: Any = Body(...),
+    current_user: UserDB = Depends(get_current_user),
+):
+    ingredients = _normalize_inspire_ingredients(raw_payload)
+    if not ingredients:
+        raise HTTPException(status_code=400, detail="Lista skĹ‚adnikĂłw nie moĹĽe byÄ‡ pusta")
+
+    if client is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AI jest niedostÄ™pne. Skonfiguruj GROQ_API_KEY.",
+        )
+
+    prompt = f"""
+Role: JesteĹ› kreatywnym Szefem Kuchni i ekspertem Zero Waste wspĂłĹ‚pracujÄ…cym z systemem KitchenOS.
+Task: Na podstawie listy skĹ‚adnikĂłw podanych przez uĹĽytkownika, zaproponuj JEDEN konkretny, smaczny i realistyczny przepis.
+
+ZASADY:
+1. SkĹ‚adniki: Maksymalnie wykorzystaj to, co podaĹ‚ uĹĽytkownik. MoĹĽesz zaĹ‚oĹĽyÄ‡, ĹĽe uĹĽytkownik posiada "bazÄ™" (sĂłl, pieprz, woda, olej, podstawowe przyprawy).
+2. Format: ZwrĂłÄ‡ ODPOWIEDĹ¹ WYĹÄ„CZNIE W FORMACIE JSON. Nie pisz ĹĽadnych wstÄ™pĂłw ani podsumowaĹ„.
+3. JÄ™zyk: Odpowiadaj w jÄ™zyku polskim.
+4. KreatywnoĹ›Ä‡: JeĹ›li skĹ‚adniki do siebie nie pasujÄ…, sprĂłbuj znaleĹşÄ‡ najbardziej sensowne poĹ‚Ä…czenie (np. kuchnia fusion).
+
+STRUKTURA JSON:
+{{
+  "title": "Nazwa dania",
+  "description": "KrĂłtki, apetyczny opis (max 2 zdania).",
+  "difficulty": "Ĺatwe/Ĺšrednie/Trudne",
+  "prep_time": "czas w minutach",
+  "ingredients": [
+    {{"item": "nazwa", "amount": "iloĹ›Ä‡", "is_extra": true/false}}
+  ],
+  "instructions": ["Krok 1...", "Krok 2..."],
+  "tips": "Opcjonalna porada szefa kuchni."
+}}
+
+*is_extra: oznacz jako true, jeĹ›li skĹ‚adnika nie ma na liĹ›cie uĹĽytkownika, ale jest niezbÄ™dny do wykonania dania.*
+
+SKĹADNIKI UĹ»YTKOWNIKA:
+{json.dumps(ingredients, ensure_ascii=False)}
+"""
+
+    try:
+        chat_completion = client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model="llama-3.3-70b-versatile",
+            temperature=0.2,
+            response_format={"type": "json_object"},
+        )
+        ai_response = chat_completion.choices[0].message.content or "{}"
+        try:
+            parsed = json.loads(ai_response)
+        except json.JSONDecodeError:
+            start = ai_response.find("{")
+            end = ai_response.rfind("}")
+            if start == -1 or end == -1:
+                raise HTTPException(status_code=502, detail="AI zwrĂłciĹ‚o nieprawidĹ‚owy JSON")
+            parsed = json.loads(ai_response[start : end + 1])
+
+        return _build_inspire_response(parsed, ingredients)
+    except HTTPException:
+        raise
+    except ValidationError:
+        raise HTTPException(status_code=502, detail="AI zwrĂłciĹ‚o niepoprawny format danych")
+    except Exception as e:
+        logger.error(f"Error inspiring recipe: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Nie udaĹ‚o siÄ™ wygenerowaÄ‡ inspiracji",
+        )
+
+
+@app.post(
+    "/api/recipes",
+    response_model=RecipeResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["Recipes"],
+)
+async def create_recipe(
+    payload: RecipeCreateRequest,
+    db: Session = Depends(get_db),
+    current_user: UserDB = Depends(get_current_user),
+):
+    title = payload.title.strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="TytuĹ‚ nie moĹĽe byÄ‡ pusty")
+
+    ingredients: List[str] = []
+    if payload.ingredients:
+        if isinstance(payload.ingredients[0], InspireIngredient):
+            for item in payload.ingredients:
+                amount = item.amount.strip() if item.amount else ""
+                if amount:
+                    ingredients.append(f"{item.item} ({amount})")
+                else:
+                    ingredients.append(item.item)
+        else:
+            ingredients = [str(item).strip() for item in payload.ingredients if str(item).strip()]
+
+    if not ingredients:
+        raise HTTPException(status_code=400, detail="Lista skĹ‚adnikĂłw nie moĹĽe byÄ‡ pusta")
+
+    instructions_list = _normalize_instruction_list(payload.instructions)
+    instructions_text = "\n".join(instructions_list).strip()
+    if not instructions_text:
+        raise HTTPException(status_code=400, detail="Instrukcje nie mogÄ… byÄ‡ puste")
+
+    generic_icon = "https://cdn-icons-png.flaticon.com/512/3081/3081557.png"
+    recipe = RecipeDB(
+        owner_id=current_user.id,
+        title=title,
+        url=f"ai:{uuid.uuid4()}",
+        image_url=generic_icon,
+        ingredients=ingredients,
+        instructions=instructions_text,
+        base_portions=int(payload.base_portions or 1),
+    )
+
+    db.add(recipe)
+    db.commit()
+    db.refresh(recipe)
+    return recipe
 
 @app.post("/api/plan/export-ics", tags=["Planner"])
 async def export_calendar(
