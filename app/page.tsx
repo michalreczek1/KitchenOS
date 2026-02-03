@@ -17,6 +17,7 @@ import {
   fetchStats,
   generateShoppingList,
   deleteRecipe,
+  setRecipeRating,
   type Recipe,
   type Stats,
   type PlannerRecipe,
@@ -79,6 +80,12 @@ function KitchenOSApp({ user, onLogout }: { user: AuthUser; onLogout: () => void
     onError: () => showToast('Nie udało się pobrać przepisów', 'error'),
     revalidateOnFocus: false,
   })
+
+  useEffect(() => {
+    const handleCategoriesUpdate = () => mutateRecipes()
+    window.addEventListener('kitchenos:categories', handleCategoriesUpdate)
+    return () => window.removeEventListener('kitchenos:categories', handleCategoriesUpdate)
+  }, [mutateRecipes])
 
   // Fetch stats
   const {
@@ -251,6 +258,22 @@ function KitchenOSApp({ user, onLogout }: { user: AuthUser; onLogout: () => void
     console.log('[v0] Recipe added:', recipe.title)
   }, [mutateRecipes, mutateStats])
 
+  const handleRateRecipe = useCallback(
+    async (id: number, rating: number) => {
+      try {
+        await setRecipeRating(id, rating)
+        mutateRecipes(
+          (prev) => (prev ? prev.map((recipe) => (recipe.id === id ? { ...recipe, rating } : recipe)) : prev),
+          { revalidate: false }
+        )
+        showToast('Ocena zapisana', 'success')
+      } catch {
+        showToast('Nie udało się zapisać oceny', 'error')
+      }
+    },
+    [mutateRecipes, showToast]
+  )
+
   const plannerSignature = useMemo(
     () => buildPlannerSignature(plannerRecipes),
     [plannerRecipes]
@@ -395,6 +418,7 @@ function KitchenOSApp({ user, onLogout }: { user: AuthUser; onLogout: () => void
               plannerRecipeIds={plannerRecipeIds}
               onAddToPlanner={handleAddToPlanner}
               onDeleteRecipe={handleDeleteRecipe}
+              onRateRecipe={handleRateRecipe}
             />
           )}
 

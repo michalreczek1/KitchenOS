@@ -23,7 +23,7 @@ from dotenv import load_dotenv
 from fastapi.responses import Response
 
 from db import SessionLocal
-from models import UserDB, RecipeDB, PlanDB, ParseLogDB
+from models import UserDB, RecipeDB, RecipeRatingDB, PlanDB, ParseLogDB
 
 
 # Load environment variables from .env file
@@ -241,9 +241,19 @@ class RecipeResponse(BaseModel):
     created_at: datetime.datetime
     ingredients: List[str] = []
     instructions: Optional[str] = None
+    rating: Optional[int] = None
 
     class Config:
         from_attributes = True
+
+
+class RecipeRatingRequest(BaseModel):
+    rating: int = Field(..., ge=1, le=5, description="Ocena w skali 1-5")
+
+
+class RecipeRatingResponse(BaseModel):
+    recipe_id: int
+    rating: int
 
 
 class RecipeSelection(BaseModel):
@@ -699,6 +709,19 @@ async def get_available_recipes(
             .limit(limit)
             .all()
         )
+        if recipes:
+            recipe_ids = [recipe.id for recipe in recipes]
+            ratings = (
+                db.query(RecipeRatingDB.recipe_id, RecipeRatingDB.rating)
+                .filter(
+                    RecipeRatingDB.owner_id == current_user.id,
+                    RecipeRatingDB.recipe_id.in_(recipe_ids),
+                )
+                .all()
+            )
+            rating_map = {recipe_id: rating for recipe_id, rating in ratings}
+            for recipe in recipes:
+                setattr(recipe, "rating", rating_map.get(recipe.id))
         logger.info(f"Retrieved {len(recipes)} recipes")
         return recipes
     except Exception as e:
@@ -728,7 +751,67 @@ async def get_recipe(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Przepis o ID {recipe_id} nie został znaleziony",
         )
+    rating = (
+        db.query(RecipeRatingDB)
+        .filter(
+            RecipeRatingDB.owner_id == current_user.id,
+            RecipeRatingDB.recipe_id == recipe.id,
+        )
+        .first()
+    )
+    if rating:
+        setattr(recipe, "rating", rating.rating)
     return recipe
+
+
+@app.put(
+    "/api/recipes/{recipe_id}/rating",
+    response_model=RecipeRatingResponse,
+    tags=["Recipes"],
+)
+async def set_recipe_rating(
+    recipe_id: int,
+    payload: RecipeRatingRequest,
+    db: Session = Depends(get_db),
+    current_user: UserDB = Depends(get_current_user),
+):
+    """
+    Ustawia ocenę przepisu (1-5) dla aktualnego użytkownika.
+    """
+    recipe = (
+        db.query(RecipeDB)
+        .filter(RecipeDB.id == recipe_id, RecipeDB.owner_id == current_user.id)
+        .first()
+    )
+    if not recipe:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Przepis o ID {recipe_id} nie został znaleziony",
+        )
+
+    existing = (
+        db.query(RecipeRatingDB)
+        .filter(
+            RecipeRatingDB.owner_id == current_user.id,
+            RecipeRatingDB.recipe_id == recipe_id,
+        )
+        .first()
+    )
+    if existing:
+        existing.rating = payload.rating
+        existing.updated_at = datetime.datetime.utcnow()
+        rating_value = existing.rating
+    else:
+        rating = RecipeRatingDB(
+            owner_id=current_user.id,
+            recipe_id=recipe_id,
+            rating=payload.rating,
+        )
+        db.add(rating)
+        rating_value = rating.rating
+
+    db.commit()
+    return RecipeRatingResponse(recipe_id=recipe_id, rating=rating_value)
 
 
 @app.delete(

@@ -3,6 +3,7 @@
 import { Search, Filter } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { RECIPE_CATEGORIES, type Recipe, type RecipeCategory } from '@/lib/api'
+import { allCategoryStyles, categoryStyles } from '@/lib/recipe-category-styles'
 import { RecipeCard } from '@/components/recipe-card'
 import { RecipeCardSkeleton } from '@/components/skeletons'
 import { EmptyState } from '@/components/empty-state'
@@ -14,6 +15,7 @@ interface RecipesViewProps {
   plannerRecipeIds: number[]
   onAddToPlanner: (recipe: Recipe) => void
   onDeleteRecipe: (id: number) => void
+  onRateRecipe: (id: number, rating: number) => void
 }
 
 export function RecipesView({
@@ -22,6 +24,7 @@ export function RecipesView({
   plannerRecipeIds,
   onAddToPlanner,
   onDeleteRecipe,
+  onRateRecipe,
 }: RecipesViewProps) {
   const [searchQuery, setSearchQuery] = useState('')
   const [activeCategory, setActiveCategory] = useState<RecipeCategory | null>(null)
@@ -38,28 +41,7 @@ export function RecipesView({
     })
   }, [recipes, searchQuery, activeCategory])
 
-  const categoryStyles: Record<RecipeCategory, { base: string; active: string }> = {
-    obiady: {
-      base: 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100',
-      active: 'border-amber-300 bg-amber-200 text-amber-900 shadow-[0_8px_18px_rgba(245,158,11,0.25)]',
-    },
-    salatki: {
-      base: 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100',
-      active: 'border-emerald-300 bg-emerald-200 text-emerald-900 shadow-[0_8px_18px_rgba(16,185,129,0.25)]',
-    },
-    pieczywo: {
-      base: 'border-orange-200 bg-orange-50 text-orange-700 hover:bg-orange-100',
-      active: 'border-orange-300 bg-orange-200 text-orange-900 shadow-[0_8px_18px_rgba(249,115,22,0.25)]',
-    },
-    desery: {
-      base: 'border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100',
-      active: 'border-rose-300 bg-rose-200 text-rose-900 shadow-[0_8px_18px_rgba(244,63,94,0.25)]',
-    },
-    inne: {
-      base: 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100',
-      active: 'border-slate-300 bg-slate-200 text-slate-900 shadow-[0_8px_18px_rgba(148,163,184,0.25)]',
-    },
-  }
+  const allStyles = allCategoryStyles
 
   return (
     <div className="space-y-6">
@@ -88,6 +70,15 @@ export function RecipesView({
 
       {/* Category Tags */}
       <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={() => setActiveCategory(null)}
+          className={`rounded-full border px-4 py-2 text-sm font-semibold transition-all ${
+            activeCategory === null ? allStyles.active : allStyles.base
+          }`}
+        >
+          Wszystkie
+        </button>
         {RECIPE_CATEGORIES.map((category) => {
           const isActive = activeCategory === category.value
           return (
@@ -124,6 +115,8 @@ export function RecipesView({
               onDelete={onDeleteRecipe}
               isInPlanner={plannerRecipeIds.includes(recipe.id)}
               onOpenPreview={setSelectedRecipeId}
+              showRating
+              onRate={onRateRecipe}
             />
           ))}
         </div>
