@@ -191,11 +191,6 @@ export async function fetchRecipes(): Promise<Recipe[]> {
 
   return data.map((recipe) => {
     if (recipe.category) return recipe
-    const sourceUrl =
-      (recipe as Recipe & { source_url?: string; url?: string }).source_url ??
-      (recipe as Recipe & { url?: string }).url
-    const isCustom = !isHttpUrl(sourceUrl)
-    if (!isCustom) return recipe
     const storedCategory = categoryMap[recipe.id]
     return storedCategory ? { ...recipe, category: storedCategory } : recipe
   })

@@ -623,7 +623,11 @@ async def parse_and_save_recipe(
                 detail="Nie można wyciągnąć składników z tej strony",
             )
 
-        base_portions = extract_portion_count(scraper.yields())
+        try:
+            base_portions = extract_portion_count(scraper.yields())
+        except Exception:
+            base_portions = 1
+            logger.warning("Nie udało się odczytać porcji z przepisu, ustawiam 1")
         image_url = scraper.image()
         instructions = scraper.instructions()
 

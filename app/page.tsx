@@ -332,6 +332,15 @@ function KitchenOSApp({ user, onLogout }: { user: AuthUser; onLogout: () => void
     handleGenerateShoppingList,
   ])
 
+  useEffect(() => {
+    if (
+      shoppingListMeta?.isStale &&
+      shoppingListMeta.signature === plannerSignature
+    ) {
+      setShoppingListMeta((prev) => (prev ? { ...prev, isStale: false } : prev))
+    }
+  }, [plannerSignature, shoppingListMeta?.isStale, shoppingListMeta?.signature])
+
   const plannerRecipeIds = plannerRecipes.map((r) => r.id)
   const recentRecipes = useMemo(() => {
     const sorted = [...recipes].sort((a, b) => {

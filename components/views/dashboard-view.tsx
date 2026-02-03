@@ -32,6 +32,7 @@ export function DashboardView({
 }: DashboardViewProps) {
   const [activeTab, setActiveTab] = useState<'link' | 'manual'>('link')
   const [linkValue, setLinkValue] = useState('')
+  const [linkCategory, setLinkCategory] = useState<RecipeCategory>('obiady')
   const [manualText, setManualText] = useState('')
   const [manualCategory, setManualCategory] = useState<RecipeCategory>('obiady')
   const [isImporting, setIsImporting] = useState(false)
@@ -171,6 +172,7 @@ export function DashboardView({
                 setIsImporting(true)
                 try {
                   const recipe = await parseRecipe(linkValue.trim())
+                  saveCustomRecipeCategory(recipe.id, linkCategory)
                   onRecipeAdded(recipe)
                   showToast('Przepis dodany pomyslnie!', 'success')
                   setLinkValue('')
@@ -215,6 +217,20 @@ export function DashboardView({
                     </>
                   )}
                 </button>
+              </div>
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
+                <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Kategoria</span>
+                <select
+                  value={linkCategory}
+                  onChange={(event) => setLinkCategory(event.target.value as RecipeCategory)}
+                  className="w-full rounded-xl border border-border/50 bg-background/80 px-3 py-2 text-sm text-foreground focus:border-primary/50 focus:outline-none focus:ring-2 focus:ring-primary/20 sm:max-w-[220px]"
+                >
+                  {RECIPE_CATEGORIES.map((category) => (
+                    <option key={category.value} value={category.value}>
+                      {category.label}
+                    </option>
+                  ))}
+                </select>
               </div>
             </form>
           ) : (

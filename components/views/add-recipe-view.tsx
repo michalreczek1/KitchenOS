@@ -26,6 +26,7 @@ export function AddRecipeView({ onRecipeAdded }: AddRecipeViewProps) {
   const [instructions, setInstructions] = useState('')
   const [category, setCategory] = useState<RecipeCategory>('obiady')
   const [servings, setServings] = useState(4)
+  const [urlCategory, setUrlCategory] = useState<RecipeCategory>('obiady')
 
   const handleUrlSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -36,6 +37,7 @@ export function AddRecipeView({ onRecipeAdded }: AddRecipeViewProps) {
 
     try {
       const recipe = await parseRecipe(url)
+      saveCustomRecipeCategory(recipe.id, urlCategory)
       setStatus('success')
       showToast('Przepis dodany pomyslnie!', 'success')
       onRecipeAdded(recipe)
@@ -161,6 +163,26 @@ export function AddRecipeView({ onRecipeAdded }: AddRecipeViewProps) {
                 disabled={isLoading}
                 className="w-full rounded-2xl border border-border bg-card py-4 pr-4 pl-12 text-foreground placeholder:text-muted-foreground transition-all focus:border-primary/50 focus:outline-none focus:ring-2 focus:ring-primary/20 disabled:opacity-50"
               />
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-foreground">Kategoria</label>
+              <div className="flex flex-wrap gap-2">
+                {RECIPE_CATEGORIES.map((cat) => (
+                  <button
+                    key={cat.value}
+                    type="button"
+                    onClick={() => setUrlCategory(cat.value)}
+                    className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
+                      urlCategory === cat.value
+                        ? 'border-primary bg-primary/10 text-primary'
+                        : 'border-border bg-card text-muted-foreground hover:bg-muted'
+                    }`}
+                  >
+                    {cat.label}
+                  </button>
+                ))}
+              </div>
             </div>
 
             <button
