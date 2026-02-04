@@ -366,6 +366,31 @@ function KitchenOSApp({ user, onLogout }: { user: AuthUser; onLogout: () => void
   }, [plannerSignature, shoppingListMeta?.isStale, shoppingListMeta?.signature])
 
   const plannerRecipeIds = plannerRecipes.map((r) => r.id)
+
+  // Dashboard counters should update immediately based on current in-app state
+  // (planner is localStorage-backed; shopping list is generated on demand / auto-refresh).
+  const plannedMealsCount = useMemo(() => {
+    return plannerRecipes.reduce((acc, recipe) => {
+      const dayCount = recipe.assignedDays && recipe.assignedDays.length > 0 ? recipe.assignedDays.length : 1
+      return acc + dayCount
+    }, 0)
+  }, [plannerRecipes])
+
+  const shoppingItemsCount = useMemo(() => {
+    if (!shoppingList) return 0
+    return Object.values(shoppingList).reduce((acc, items) => {
+      return acc + items.filter((item) => !item.checked).length
+    }, 0)
+  }, [shoppingList])
+
+  const dashboardStats = useMemo<Stats>(() => {
+    return {
+      total_recipes: stats?.total_recipes ?? recipes.length,
+      planned_meals: plannedMealsCount,
+      shopping_items: shoppingItemsCount,
+    }
+  }, [plannedMealsCount, shoppingItemsCount, recipes.length, stats?.total_recipes])
+
   const recentRecipes = useMemo(() => {
     const sorted = [...recipes].sort((a, b) => {
       if (a.created_at && b.created_at) {
@@ -401,7 +426,7 @@ function KitchenOSApp({ user, onLogout }: { user: AuthUser; onLogout: () => void
         >
           {currentView === 'dashboard' && (
             <DashboardView
-              stats={stats ?? null}
+              stats={dashboardStats}
               recentRecipes={recentRecipes}
               isLoading={isLoadingStats || isLoadingRecipes}
               onViewRecipes={() => setCurrentView('recipes')}
