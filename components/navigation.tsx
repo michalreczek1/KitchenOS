@@ -82,7 +82,7 @@ export function Navigation({
   const items = isAdmin
     ? [...navItems, { id: 'admin' as const, label: 'Admin', icon: Shield, colorClass: 'icon-sky' }]
     : navItems
-  const mobileItems = navItems.filter((item) => !item.isSub)
+  const mobileItems = navItems.filter((item) => item.id !== 'inspiracje')
 
   const resetPasswordForm = () => {
     setCurrentPassword('')
