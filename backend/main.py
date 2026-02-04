@@ -1413,23 +1413,30 @@ DANE WEJŚCIOWE:
 
 RESTRYKCYJNE ZASADY GENEROWANIA:
 
-1. FILTRACJA ZER (KRYTYCZNE):
-   - Jeśli po przeliczeniu ilość jakiegokolwiek składnika wynosi 0, jest bliska 0 (np. 0.1) lub tekst sugeruje brak (np. "opcjonalnie"), CAŁKOWICIE USUŃ ten produkt z listy.
-   - NIE WOLNO wypisywać produktów z ilością "0".
+0. ZERO HALUCYNACJI (KRYTYCZNE):
+   - NIE DODAWAJ ?adnych produkt?w, kt?rych nie ma w danych wej?ciowych.
+   - Je?li sk?adnik w wej?ciu jest nieprecyzyjny (np. "oliwa truflowa"), zachowaj go dok?adnie jako osobny produkt.
+   - Nie dodawaj og?lnik?w typu "mi?so", "sos", "makaron" itp., je?li nie wyst?puj? w wej?ciu.
 
-2. INTELIGENTNE ZAOKRĄGLANIE W GÓRĘ:
-   - Produkty liczone w sztukach (cebula, czosnek, jaja, warzywa w całości) ZAWSZE zaokrąglaj do najbliższej LICZBY CAŁKOWITEJ W GÓRĘ. 
-   - Przykład: 0.2 cebuli -> 1 cebula, 1.1 pora -> 2 pory.
+1. FILTRACJA ZER (KRYTYCZNE):
+   - Je?li po przeliczeniu ilo?? jakiegokolwiek sk?adnika wynosi 0, jest bliska 0 (np. 0.1) lub tekst sugeruje brak (np. "opcjonalnie"), CA?KOWICIE USU? ten produkt z listy.
+   - NIE WOLNO wypisywa? produkt?w z ilo?ci? "0".
+
+2. INTELIGENTNE ZAOKR?GLANIE W G?R?:
+   - Produkty liczone w sztukach (cebula, czosnek, jaja, warzywa w ca?o?ci) ZAWSZE zaokr?glaj do najbli?szej LICZBY CA?KOWITEJ W G?R?.
+   - NIE zamieniaj jednostek wagowych (g, ml) na "sztuki". Je?li wej?cie ma gramy lub ?y?ki ? zachowaj te jednostki.
+   - Przyk?ad: 0.2 cebuli -> 1 cebula, 1.1 pora -> 2 pory.
 
 3. AGREGACJA I JEDNOSTKI:
-   - Zsumuj identyczne składniki (np. sól z 3 przepisów).
-   - Format: "Nazwa produktu (Ilość Jednostka)".
-   - Używaj czytelnych ułamków (1/2, 1/4) dla szklanek/łyżek, ale liczb całkowitych dla sztuk.
+   - Zsumuj identyczne sk?adniki (np. s?l z 3 przepis?w).
+   - Format: "Nazwa produktu (Ilo?? Jednostka)".
+   - Je?li sk?adnik w wej?ciu nie ma ilo?ci, wypisz sam? nazw? bez nawiasu.
+   - U?ywaj czytelnych u?amk?w (1/2, 1/4) dla szklanek/?y?ek, ale liczb ca?kowitych dla sztuk.
 
 4. KATEGORYZACJA:
-   - Przypisz produkty do kategorii: Warzywa i owoce, Mięso i ryby, Nabiał i jaja, Pieczywo i makarony, Oleje i tłuszcze, Przyprawy i dodatki, Produkty sypkie, Inne.
+   - Przypisz produkty do kategorii: Warzywa i owoce, Mi?so i ryby, Nabia? i jaja, Pieczywo i makarony, Oleje i t?uszcze, Przyprawy i dodatki, Produkty sypkie, Inne.
 
-ZWRÓĆ WYŁĄCZNIE CZYSTY JSON:
+ZWR?? WY??CZNIE CZYSTY JSON:
 {{
   "shopping_list": [
     {{
