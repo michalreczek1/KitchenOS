@@ -1404,48 +1404,52 @@ async def generate_shopping_list(
             detail="AI jest niedostÄpne. Skonfiguruj GROQ_API_KEY.",
         )
 
-    # Ulepszone prompt dla AI
-    prompt = f"""
-Dzia?asz jako ekspert logistyki kuchennej KitchenOS. Twoim zadaniem jest skonsolidowanie sk?adnik?w z wielu przepis?w w jedn?, przejrzyst? list? zakup?w.
+    # Ulepszone prompt dla AI (ASCII-only, bez problemow z kodowaniem)
+    compiled_json = json.dumps(compiled_data, indent=2, ensure_ascii=False)
+    prompt = "\n".join(
+        [
+            "Dzialasz jako ekspert logistyki kuchennej KitchenOS. Twoim zadaniem jest skonsolidowanie skladnikow z wielu przepisow w jedna, przejrzysta liste zakupow.",
+            "",
+            "DANE WEJSCIOWE:",
+            compiled_json,
+            "",
+            "RESTRYKCYJNE ZASADY GENEROWANIA:",
+            "",
+            "0. ZERO HALUCYNACJI (KRYTYCZNE):",
+            "   - NIE DODAWAJ zadnych produktow, ktorych nie ma w danych wejsciowych.",
+            '   - Jesli skladnik w wejsciu jest nieprecyzyjny (np. "oliwa truflowa"), zachowaj go dokladnie jako osobny produkt.',
+            '   - Nie dodawaj ogolnikow typu "mieso", "sos", "makaron" itp., jesli nie wystepuja w wejsciu.',
+            "",
+            "1. FILTRACJA ZER (KRYTYCZNE):",
+            '   - Jesli po przeliczeniu ilosc jakiegokolwiek skladnika wynosi 0, jest bliska 0 (np. 0.1) lub tekst sugeruje brak (np. "opcjonalnie"), CALKOWICIE USUN ten produkt z listy.',
+            '   - NIE WOLNO wypisywac produktow z iloscia "0".',
+            "",
+            "2. INTELIGENTNE ZAOKRAGLANIE W GORE:",
+            "   - Produkty liczone w sztukach (cebula, czosnek, jaja, warzywa w calosci) ZAWSZE zaokraglaj do najblizszej LICZBY CALKOWITEJ W GORE.",
+            '   - NIE zamieniaj jednostek wagowych (g, ml) na "sztuki". Jesli wejscie ma gramy lub lyzki - zachowaj te jednostki.',
+            "   - Przyklad: 0.2 cebuli -> 1 cebula, 1.1 pora -> 2 pory.",
+            "",
+            "3. AGREGACJA I JEDNOSTKI:",
+            "   - Zsumuj identyczne skladniki (np. sol z 3 przepisow).",
+            '   - Format: "Nazwa produktu (Ilosc Jednostka)".',
+            "   - Jesli skladnik w wejsciu nie ma ilosci, wypisz sama nazwe bez nawiasu.",
+            "   - Uzywaj czytelnych ulamkow (1/2, 1/4) dla szklanek/lyzek, ale liczb calkowitych dla sztuk.",
+            "",
+            "4. KATEGORYZACJA:",
+            "   - Przypisz produkty do kategorii: Warzywa i owoce, Mieso i ryby, Nabial i jaja, Pieczywo i makarony, Oleje i tluszcze, Przyprawy i dodatki, Produkty sypkie, Inne.",
+            "",
+            "ZWROC WYLACZNIE CZYSTY JSON:",
+            "{",
+            '  "shopping_list": [',
+            "    {",
+            '      "category": "Warzywa i owoce",',
+            '      "items": ["Cebula (2 sztuki)", "Czosnek (1 glowka)"]',
+            "    }",
+            "  ]",
+            "}",
+        ]
+    )
 
-DANE WEJ?CIOWE:
-{json.dumps(compiled_data, indent=2, ensure_ascii=False)}
-
-RESTRYKCYJNE ZASADY GENEROWANIA:
-
-0. ZERO HALUCYNACJI (KRYTYCZNE):
-   - NIE DODAWAJ ?adnych produkt?w, kt?rych nie ma w danych wej?ciowych.
-   - Je?li sk?adnik w wej?ciu jest nieprecyzyjny (np. "oliwa truflowa"), zachowaj go dok?adnie jako osobny produkt.
-   - Nie dodawaj og?lnik?w typu "mi?so", "sos", "makaron" itp., je?li nie wyst?puj? w wej?ciu.
-
-1. FILTRACJA ZER (KRYTYCZNE):
-   - Je?li po przeliczeniu ilo?? jakiegokolwiek sk?adnika wynosi 0, jest bliska 0 (np. 0.1) lub tekst sugeruje brak (np. "opcjonalnie"), CA?KOWICIE USU? ten produkt z listy.
-   - NIE WOLNO wypisywa? produkt?w z ilo?ci? "0".
-
-2. INTELIGENTNE ZAOKR?GLANIE W G?R?:
-   - Produkty liczone w sztukach (cebula, czosnek, jaja, warzywa w ca?o?ci) ZAWSZE zaokr?glaj do najbli?szej LICZBY CA?KOWITEJ W G?R?.
-   - NIE zamieniaj jednostek wagowych (g, ml) na "sztuki". Je?li wej?cie ma gramy lub ?y?ki - zachowaj te jednostki.
-   - Przyk?ad: 0.2 cebuli -> 1 cebula, 1.1 pora -> 2 pory.
-
-3. AGREGACJA I JEDNOSTKI:
-   - Zsumuj identyczne sk?adniki (np. s?l z 3 przepis?w).
-   - Format: "Nazwa produktu (Ilo?? Jednostka)".
-   - Je?li sk?adnik w wej?ciu nie ma ilo?ci, wypisz sam? nazw? bez nawiasu.
-   - U?ywaj czytelnych u?amk?w (1/2, 1/4) dla szklanek/?y?ek, ale liczb ca?kowitych dla sztuk.
-
-4. KATEGORYZACJA:
-   - Przypisz produkty do kategorii: Warzywa i owoce, Mi?so i ryby, Nabia? i jaja, Pieczywo i makarony, Oleje i t?uszcze, Przyprawy i dodatki, Produkty sypkie, Inne.
-
-ZWR?? WY??CZNIE CZYSTY JSON:
-{
-  "shopping_list": [
-    {
-      "category": "Warzywa i owoce",
-      "items": ["Cebula (2 sztuki)", "Czosnek (1 g??wka)"]
-    }
-  ]
-}
-"""
 
     try:
         chat_completion = client.chat.completions.create(
