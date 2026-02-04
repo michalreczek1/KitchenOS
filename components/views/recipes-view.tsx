@@ -47,7 +47,7 @@ export function RecipesView({
     <div className="space-y-6">
       {/* Header */}
       <div className="space-y-2">
-        <h1 className="text-3xl font-bold text-foreground">Eksplorator Przepisów</h1>
+        <h1 className="text-3xl font-bold text-foreground">Twoje przepisy</h1>
         <p className="text-muted-foreground">Przeglądaj i zarządzaj swoją kolekcją przepisów</p>
       </div>
 
