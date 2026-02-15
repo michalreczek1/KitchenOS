@@ -445,6 +445,7 @@ class RecipeResponse(BaseModel):
     base_portions: int
     servings_unit: Optional[str] = None
     yield_display_label: Optional[str] = None
+    yield_assumption_reason: Optional[str] = None
     total_weight_g: Optional[float] = None
     portion_weight_g: Optional[float] = None
     piece_weight_g: Optional[float] = None
@@ -552,8 +553,11 @@ DEFAULT_PORTION_WEIGHT_BY_TYPE_G = {
     "default": 250.0,
 }
 YIELD_NUMBER_LIMIT = 200
-SNACK_PORTION_WEIGHT_G = 35.0
+SNACK_PORTION_WEIGHT_G = 30.0
+GENERAL_DESSERT_PORTION_WEIGHT_G = 40.0
 SNACK_TOTAL_WEIGHT_THRESHOLD_G = 500.0
+SNACK_MAX_KCAL_PER_PORTION = 800.0
+GL_MAX_DISPLAY_VALUE = 50.0
 LOW_CONFIDENCE_TERMS = (
     "dowolna ilosc",
     "dowolna ilość",
@@ -569,7 +573,16 @@ LOW_CONFIDENCE_TERMS = (
 def _normalize_text(value: Optional[str]) -> str:
     if not value:
         return ""
-    normalized = unicodedata.normalize("NFKD", value)
+    transliterated = str(value).translate(
+        str.maketrans(
+            {
+                "ł": "l",
+                "Ł": "l",
+                "ß": "ss",
+            }
+        )
+    )
+    normalized = unicodedata.normalize("NFKD", transliterated)
     return "".join(ch for ch in normalized if not unicodedata.combining(ch)).lower()
 
 
@@ -639,9 +652,23 @@ def _is_snack_like_recipe(title: str, ingredients: List[str], instructions: List
     return any(keyword in blob for keyword in snack_keywords)
 
 
+def _is_sweet_snack_recipe(title: str, ingredients: List[str], instructions: List[str]) -> bool:
+    blob = _normalize_text(" ".join([title, " ".join(ingredients), " ".join(instructions)]))
+    has_sweet_tokens = any(token in blob for token in ("cukier", "miod", "miód", "karmel", "slodycz", "słodycz"))
+    has_nut_tokens = any(token in blob for token in ("orzech", "migdal", "migdał", "migdal", "migdaly"))
+    has_meal_tokens = any(token in blob for token in ("mieso", "mięso", "kurczak", "ziemniak", "makaron", "ryz", "ryż"))
+    return (has_sweet_tokens and has_nut_tokens) and not has_meal_tokens
+
+
+def _get_snack_standard_portion_weight_g(title: str, ingredients: List[str], instructions: List[str]) -> float:
+    if _is_sweet_snack_recipe(title, ingredients, instructions):
+        return SNACK_PORTION_WEIGHT_G
+    return GENERAL_DESSERT_PORTION_WEIGHT_G
+
+
 def _get_standard_portion_weight_g(title: str, ingredients: List[str], instructions: List[str]) -> float:
     if _is_snack_like_recipe(title, ingredients, instructions):
-        return SNACK_PORTION_WEIGHT_G
+        return _get_snack_standard_portion_weight_g(title, ingredients, instructions)
     recipe_type = _detect_recipe_type(title, ingredients, instructions)
     return DEFAULT_PORTION_WEIGHT_BY_TYPE_G.get(recipe_type, DEFAULT_PORTION_WEIGHT_BY_TYPE_G["default"])
 
@@ -1081,10 +1108,11 @@ def resolve_yield_context_weights(
         and total_weight_g >= SNACK_TOTAL_WEIGHT_THRESHOLD_G
         and _is_snack_like_recipe(title, ingredients, instructions)
     ):
-        portions = max(1, round(total_weight_g / SNACK_PORTION_WEIGHT_G))
+        standard_snack_portion = _get_snack_standard_portion_weight_g(title, ingredients, instructions)
+        portions = max(1, round(total_weight_g / standard_snack_portion))
         context.base_portions = portions
         context.mode = "total_weight_only"
-        context.assumption_reason = f"Snack-like recipe: used {SNACK_PORTION_WEIGHT_G:.0f} g per portion"
+        context.assumption_reason = f"Snack-like recipe: used {standard_snack_portion:.0f} g per portion"
 
     portion_weight = round(total_weight_g / portions, 1)
     context.total_weight_g = round(total_weight_g, 1)
@@ -1376,6 +1404,8 @@ def _apply_nutrition_guardrails(
     net_carbs = max(0.0, carbs - fiber)
     if glycemic_load is not None and net_carbs >= 0 and glycemic_load > net_carbs:
         glycemic_load = round(net_carbs, 1)
+    if glycemic_load is not None and glycemic_load > GL_MAX_DISPLAY_VALUE:
+        glycemic_load = None
 
     # Guardrail: sum of macros cannot exceed portion mass by a meaningful margin.
     if portion_weight_g and portion_weight_g > 0:
@@ -1424,6 +1454,47 @@ def _compute_nutrition_confidence_score(
         base_score -= 10.0
 
     return round(max(5.0, min(100.0, base_score)), 1)
+
+
+def _rebalance_portions_for_dense_snack_if_needed(
+    *,
+    context: YieldContext,
+    title: str,
+    ingredients: List[str],
+    instructions: List[str],
+    nutrition_per_portion: Optional[dict],
+) -> bool:
+    calories = _coerce_nutrition_number((nutrition_per_portion or {}).get("calories_kcal"))
+    if calories is None:
+        return False
+
+    recipe_type = _detect_recipe_type(title, ingredients, instructions)
+    snack_like = _is_snack_like_recipe(title, ingredients, instructions) or _is_sweet_snack_recipe(
+        title, ingredients, instructions
+    )
+    if not (recipe_type == "dessert" or snack_like):
+        return False
+    if calories <= SNACK_MAX_KCAL_PER_PORTION:
+        return False
+
+    total_weight_g = context.total_weight_g
+    if total_weight_g is None or total_weight_g <= 0:
+        return False
+
+    current_portions = max(1, int(context.base_portions or 1))
+    standard_portion_g = _get_snack_standard_portion_weight_g(title, ingredients, instructions)
+    target_portions = max(current_portions, round(total_weight_g / standard_portion_g))
+    if target_portions <= current_portions:
+        return False
+
+    context.base_portions = target_portions
+    context.portion_weight_g = round(total_weight_g / target_portions, 1)
+    context.mode = "total_weight_only"
+    context.assumption_reason = (
+        f"Auto-correction: {calories:.0f} kcal/portion too high, "
+        f"set ~{standard_portion_g:.0f} g per portion ({target_portions} portions)"
+    )
+    return True
 
 
 def merge_nutrition_sources(
@@ -2155,6 +2226,22 @@ async def parse_and_save_recipe(
             page_nutrition_per_100g=page_nutrition_per_100g,
             portion_weight_g=yield_context.portion_weight_g,
         )
+        if _rebalance_portions_for_dense_snack_if_needed(
+            context=yield_context,
+            title=title,
+            ingredients=ingredients,
+            instructions=instructions_list,
+            nutrition_per_portion=nutrition_estimate,
+        ):
+            base_portions = max(1, int(yield_context.base_portions or base_portions))
+            nutrition_estimate, nutrition_source, nutrition_confidence_score = estimate_recipe_nutrition(
+                title=title,
+                ingredients=ingredients,
+                instructions=instructions_list,
+                base_portions=base_portions,
+                page_nutrition_per_100g=page_nutrition_per_100g,
+                portion_weight_g=yield_context.portion_weight_g,
+            )
 
         # Sprawdź czy przepis już istnieje
         recipe = (
@@ -2172,6 +2259,7 @@ async def parse_and_save_recipe(
             recipe.base_portions = base_portions
             recipe.servings_unit = servings_unit
             recipe.yield_display_label = yield_context.yield_display_label
+            recipe.yield_assumption_reason = yield_context.assumption_reason
             recipe.total_weight_g = yield_context.total_weight_g
             recipe.portion_weight_g = yield_context.portion_weight_g
             recipe.piece_weight_g = yield_context.piece_weight_g
@@ -2198,6 +2286,7 @@ async def parse_and_save_recipe(
                 base_portions=base_portions,
                 servings_unit=servings_unit,
                 yield_display_label=yield_context.yield_display_label,
+                yield_assumption_reason=yield_context.assumption_reason,
                 total_weight_g=yield_context.total_weight_g,
                 portion_weight_g=yield_context.portion_weight_g,
                 piece_weight_g=yield_context.piece_weight_g,
@@ -2692,6 +2781,22 @@ ZWROT (tylko JSON):
             page_nutrition_per_100g=None,
             portion_weight_g=yield_context.portion_weight_g,
         )
+        if _rebalance_portions_for_dense_snack_if_needed(
+            context=yield_context,
+            title=parsed_title,
+            ingredients=parsed_ingredients,
+            instructions=instructions_list,
+            nutrition_per_portion=nutrition_estimate,
+        ):
+            base_portions = max(1, int(yield_context.base_portions or base_portions))
+            nutrition_estimate, nutrition_source, nutrition_confidence_score = estimate_recipe_nutrition(
+                title=parsed_title,
+                ingredients=parsed_ingredients,
+                instructions=instructions_list,
+                base_portions=base_portions,
+                page_nutrition_per_100g=None,
+                portion_weight_g=yield_context.portion_weight_g,
+            )
 
         # Ikona domyślna
         generic_icon = "https://cdn-icons-png.flaticon.com/512/3081/3081557.png"
@@ -2709,6 +2814,7 @@ ZWROT (tylko JSON):
             base_portions=base_portions,
             servings_unit=servings_unit,
             yield_display_label=yield_context.yield_display_label,
+            yield_assumption_reason=yield_context.assumption_reason,
             total_weight_g=yield_context.total_weight_g,
             portion_weight_g=yield_context.portion_weight_g,
             piece_weight_g=yield_context.piece_weight_g,
@@ -2941,6 +3047,22 @@ async def create_recipe(
         page_nutrition_per_100g=None,
         portion_weight_g=yield_context.portion_weight_g,
     )
+    if _rebalance_portions_for_dense_snack_if_needed(
+        context=yield_context,
+        title=title,
+        ingredients=ingredients,
+        instructions=instructions_list,
+        nutrition_per_portion=nutrition_estimate,
+    ):
+        base_portions = max(1, int(yield_context.base_portions or base_portions))
+        nutrition_estimate, nutrition_source, nutrition_confidence_score = estimate_recipe_nutrition(
+            title=title,
+            ingredients=ingredients,
+            instructions=instructions_list,
+            base_portions=base_portions,
+            page_nutrition_per_100g=None,
+            portion_weight_g=yield_context.portion_weight_g,
+        )
 
     generic_icon = "https://cdn-icons-png.flaticon.com/512/3081/3081557.png"
     recipe = RecipeDB(
@@ -2953,6 +3075,7 @@ async def create_recipe(
         base_portions=base_portions,
         servings_unit=servings_unit,
         yield_display_label=yield_context.yield_display_label,
+        yield_assumption_reason=yield_context.assumption_reason,
         total_weight_g=yield_context.total_weight_g,
         portion_weight_g=yield_context.portion_weight_g,
         piece_weight_g=yield_context.piece_weight_g,

@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { X, Clock, Users, ExternalLink, UtensilsCrossed, Loader2, PenLine } from 'lucide-react'
+import { X, Clock, Users, ExternalLink, UtensilsCrossed, Loader2, PenLine, Info } from 'lucide-react'
 import { fetchRecipeDetails, RECIPE_CATEGORIES, type RecipeCategory, type RecipeDetails } from '@/lib/api'
 import { categoryStyles } from '@/lib/recipe-category-styles'
 import { getCustomRecipeCategoryMap, saveCustomRecipeCategory } from '@/lib/custom-recipe-categories'
@@ -72,6 +72,7 @@ export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
   const basePortions = Math.max(1, recipe?.servings ?? recipe?.base_portions ?? 1)
   const servingsUnit = recipe?.servings_unit === 'people' ? 'people' : 'servings'
   const yieldDisplayLabel = recipe?.yield_display_label?.trim() || null
+  const yieldAssumptionReason = recipe?.yield_assumption_reason?.trim() || null
   const totalWeightLabel = formatWeightLabel(recipe?.total_weight_g)
   const portionWeightLabel = formatWeightLabel(recipe?.portion_weight_g)
   const pieceWeightLabel = formatWeightLabel(recipe?.piece_weight_g)
@@ -104,6 +105,12 @@ export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
   ]
   const hasAnyNutrition = nutritionRows.some((row) => !!row.value)
   const denseNutritionLayout = normalizedIngredients.length >= 8
+  const hasAutoPortionAdjustment = /auto-correction|snack-like recipe/i.test(yieldAssumptionReason ?? '')
+  const autoPortionMessage = hasAutoPortionAdjustment
+    ? `Automatycznie dopasowano wielkość porcji do standardów dietetycznych${
+        portionWeightLabel ? ` (${portionWeightLabel}).` : '.'
+      }`
+    : null
 
   const yieldContext = useMemo(() => {
     const hasPanSize =
@@ -284,6 +291,12 @@ export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
                   <div className={`mt-4 rounded-xl border border-border bg-muted/30 text-sm ${denseNutritionLayout ? 'p-3' : 'p-4'}`}>
                     <h4 className="font-semibold text-foreground">Wartości odżywcze</h4>
                     <p className="mt-2 text-muted-foreground">{planSentence}</p>
+                    {autoPortionMessage && (
+                      <div className="mt-2 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 text-xs text-amber-800">
+                        <Info className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+                        <span>{autoPortionMessage}</span>
+                      </div>
+                    )}
                     <p className="mt-1 text-muted-foreground">{nutritionBasisSentence}</p>
                     {(confidenceLabel || sourceLabel) && (
                       <p className="mt-1 text-muted-foreground">

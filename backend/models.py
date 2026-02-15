@@ -46,6 +46,7 @@ class RecipeDB(Base):
     base_portions = Column(Integer, default=1, nullable=False)
     servings_unit = Column(String, nullable=False, default="servings")
     yield_display_label = Column(String, nullable=True)
+    yield_assumption_reason = Column(String, nullable=True)
     total_weight_g = Column(Float, nullable=True)
     portion_weight_g = Column(Float, nullable=True)
     piece_weight_g = Column(Float, nullable=True)

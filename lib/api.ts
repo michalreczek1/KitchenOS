@@ -77,6 +77,7 @@ export interface Recipe {
   base_portions?: number
   servings_unit?: ServingsUnit
   yield_display_label?: string | null
+  yield_assumption_reason?: string | null
   total_weight_g?: number | null
   portion_weight_g?: number | null
   piece_weight_g?: number | null
