@@ -3,7 +3,6 @@ import re
 import requests
 import datetime
 import json
-import statistics
 import uuid
 import secrets
 from urllib.parse import urlparse, urlencode
@@ -638,41 +637,23 @@ def estimate_nutrition_with_ai(
         ]
     )
 
-    sample_map = {
-        "protein_g": [],
-        "carbs_g": [],
-        "fiber_g": [],
-        "glycemic_load": [],
-    }
-
-    for attempt in range(1, 4):
-        try:
-            completion = client.chat.completions.create(
-                messages=[{"role": "user", "content": prompt}],
-                model="llama-3.3-70b-versatile",
-                temperature=0,
-                response_format={"type": "json_object"},
-            )
-            raw = completion.choices[0].message.content or "{}"
-            parsed_raw = json.loads(raw)
-            parsed = _parse_nutrition_payload(parsed_raw)
-            if not parsed:
-                logger.warning("Nutrition attempt %s invalid payload", attempt)
-                continue
-            for key, value in parsed.items():
-                sample_map[key].append(value)
-        except Exception as exc:
-            logger.warning("Nutrition attempt %s failed: %s", attempt, str(exc))
-
-    if not all(sample_map[key] for key in sample_map):
+    try:
+        completion = client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model="llama-3.3-70b-versatile",
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+        raw = completion.choices[0].message.content or "{}"
+        parsed_raw = json.loads(raw)
+        parsed = _parse_nutrition_payload(parsed_raw)
+        if not parsed:
+            logger.warning("Nutrition request returned invalid payload")
+            return None
+        return parsed
+    except Exception as exc:
+        logger.warning("Nutrition request failed: %s", str(exc))
         return None
-
-    return {
-        "protein_g": round(statistics.median(sample_map["protein_g"]), 1),
-        "carbs_g": round(statistics.median(sample_map["carbs_g"]), 1),
-        "fiber_g": round(statistics.median(sample_map["fiber_g"]), 1),
-        "glycemic_load": round(statistics.median(sample_map["glycemic_load"]), 1),
-    }
 
 
 def fetch_html_safely(url: str, timeout: int = 10) -> str:
