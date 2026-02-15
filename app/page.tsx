@@ -58,6 +58,50 @@ const buildPlannerSignature = (recipes: PlannerRecipe[]) => {
   return JSON.stringify(payload)
 }
 
+const reconcilePlannerRecipes = (
+  planner: PlannerRecipe[],
+  recipes: Recipe[]
+): { next: PlannerRecipe[]; removedCount: number; changed: boolean } => {
+  if (planner.length === 0) {
+    return { next: planner, removedCount: 0, changed: false }
+  }
+  const recipeById = new Map(recipes.map((recipe) => [recipe.id, recipe]))
+  const next: PlannerRecipe[] = []
+  let removedCount = 0
+  let changed = false
+  for (const planned of planner) {
+    const liveRecipe = recipeById.get(planned.id)
+    if (!liveRecipe) {
+      removedCount += 1
+      changed = true
+      continue
+    }
+    const assignedDays = normalizeAssignedDays(planned)
+    const merged: PlannerRecipe = {
+      ...liveRecipe,
+      portions: planned.portions > 0 ? planned.portions : 2,
+      assignedDays,
+    }
+    if (
+      planned.title !== merged.title ||
+      planned.image_url !== merged.image_url ||
+      planned.source_url !== merged.source_url ||
+      planned.category !== merged.category ||
+      planned.rating !== merged.rating ||
+      planned.portions !== merged.portions ||
+      JSON.stringify(normalizeAssignedDays(planned)) !== JSON.stringify(assignedDays)
+    ) {
+      changed = true
+    }
+    next.push(merged)
+  }
+  if (!changed && next.length !== planner.length) {
+    changed = true
+  }
+
+  return { next, removedCount, changed }
+}
+
 type View = 'dashboard' | 'recipes' | 'add' | 'planner' | 'shopping' | 'inspiracje' | 'admin'
 
 function KitchenOSApp({ user, onLogout }: { user: AuthUser; onLogout: () => void }) {
@@ -77,6 +121,7 @@ function KitchenOSApp({ user, onLogout }: { user: AuthUser; onLogout: () => void
     data: recipes = [],
     isLoading: isLoadingRecipes,
     mutate: mutateRecipes,
+    error: recipesError,
   } = useSWR(user ? 'recipes' : null, fetchRecipes, {
     onError: () => showToast('Nie udało się pobrać przepisów', 'error'),
     revalidateOnFocus: false,
@@ -121,6 +166,19 @@ function KitchenOSApp({ user, onLogout }: { user: AuthUser; onLogout: () => void
       }
     }
   }, [plannerStorageKey])
+
+  useEffect(() => {
+    if (isLoadingRecipes || recipesError || plannerRecipes.length === 0) return
+    const { next, removedCount, changed } = reconcilePlannerRecipes(plannerRecipes, recipes)
+    if (!changed) return
+    setPlannerRecipes(next)
+    if (removedCount > 0) {
+      showToast(
+        `Usunieto ${removedCount} niedostepnych ${removedCount === 1 ? 'przepis' : 'przepisow'} z planera`,
+        'info'
+      )
+    }
+  }, [isLoadingRecipes, plannerRecipes, recipes, recipesError, showToast])
 
   useEffect(() => {
     const savedList = localStorage.getItem(shoppingListStorageKey)
@@ -283,7 +341,6 @@ function KitchenOSApp({ user, onLogout }: { user: AuthUser; onLogout: () => void
   // Generate shopping list
   const handleGenerateShoppingList = useCallback(async (options?: { silent?: boolean }) => {
     if (plannerRecipes.length === 0) return
-
     setIsGeneratingList(true)
     try {
       const servings = plannerRecipes.reduce((acc, r) => {
@@ -292,7 +349,6 @@ function KitchenOSApp({ user, onLogout }: { user: AuthUser; onLogout: () => void
         return acc
       }, {} as Record<number, number>)
       const recipeIds = Object.keys(servings).map((id) => Number(id))
-
       const list = await generateShoppingList(recipeIds, servings)
       setShoppingList(list)
       const generatedAt = new Date().toISOString()
@@ -300,16 +356,23 @@ function KitchenOSApp({ user, onLogout }: { user: AuthUser; onLogout: () => void
       setShoppingListMeta({ signature, generatedAt, isStale: false })
       if (!options?.silent) {
         setCurrentView('shopping')
-        showToast('Lista zakupów wygenerowana!', 'success')
+        showToast('Lista zakupow wygenerowana!', 'success')
       }
-    } catch {
+    } catch (error) {
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : 'Nie udalo sie wygenerowac listy'
+      if (message.includes('Nie znaleziono przepis')) {
+        mutateRecipes()
+      }
       if (!options?.silent) {
-        showToast('Nie udało się wygenerować listy', 'error')
+        showToast(message, 'error')
       }
     } finally {
       setIsGeneratingList(false)
     }
-  }, [plannerRecipes, showToast])
+  }, [mutateRecipes, plannerRecipes, showToast])
 
   useEffect(() => {
     if (plannerRecipes.length === 0) {

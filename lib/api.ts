@@ -302,7 +302,8 @@ export async function generateShoppingList(
     }),
   })
   if (!response.ok) {
-    throw new Error('Failed to generate shopping list')
+    const data = await response.json().catch(() => null)
+    throw new Error(data?.detail || 'Failed to generate shopping list')
   }
   const data = (await response.json()) as ShoppingListResponse
   return normalizeShoppingList(data)
