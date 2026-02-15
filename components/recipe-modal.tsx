@@ -59,6 +59,7 @@ export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [activeCategory, setActiveCategory] = useState<RecipeCategory>('inne')
+  const [showNutritionInfo, setShowNutritionInfo] = useState(false)
 
   const GENERIC_ICON_URL = 'https://cdn-icons-png.flaticon.com/512/3081/3081557.png'
   const sourceUrl =
@@ -180,6 +181,7 @@ export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
       return
     }
 
+    setShowNutritionInfo(false)
     setIsLoading(true)
     setError(null)
 
@@ -298,13 +300,21 @@ export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
                     <div className="flex items-center gap-2">
                       <h4 className="font-semibold text-foreground">Wartości odżywcze</h4>
                       {confidenceTooltipText && (
-                        <span
-                          className="inline-flex h-5 min-w-5 cursor-help items-center justify-center rounded-full border border-border px-1 text-xs font-semibold leading-none text-muted-foreground"
-                          title={confidenceTooltipText}
-                          aria-label={confidenceTooltipText}
-                        >
-                          *
-                        </span>
+                        <div className="relative">
+                          <button
+                            type="button"
+                            onClick={() => setShowNutritionInfo((prev) => !prev)}
+                            className="inline-flex h-5 min-w-5 cursor-pointer items-center justify-center rounded-full border border-border px-1 text-xs font-semibold leading-none text-muted-foreground hover:bg-muted"
+                            aria-label={confidenceTooltipText}
+                          >
+                            i
+                          </button>
+                          {showNutritionInfo && (
+                            <div className="absolute top-7 right-0 z-20 w-64 rounded-lg border border-border bg-card p-2 text-xs text-muted-foreground shadow-lg">
+                              {confidenceTooltipText}
+                            </div>
+                          )}
+                        </div>
                       )}
                     </div>
                     {autoPortionMessage && (
