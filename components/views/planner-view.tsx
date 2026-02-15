@@ -77,6 +77,15 @@ const getPlannerImage = (recipe: PlannerRecipe) => {
   return recipe.image_url && !isGenericImage ? recipe.image_url : placeholderImage
 }
 
+const needsGoogleReconnect = (message: string) => {
+  const value = message.toLowerCase()
+  if (value.includes('401:')) return true
+  if (value.includes('refresh token')) return true
+  if (value.includes('google') && value.includes('ponownie')) return true
+  if (value.includes('google') && value.includes('oauth')) return true
+  return false
+}
+
 function getWeekDays(): DayInfo[] {
   const today = new Date()
   const currentDayOfWeek = today.getDay() // 0 = Sunday, 1 = Monday, etc.
@@ -230,8 +239,20 @@ export function PlannerView({
       if (!selectedCalendarId && calendars.length === 1) {
         setSelectedCalendarId(calendars[0].id)
       }
-    } catch {
-      showToast('Nie udało się pobrać listy kalendarzy', 'error')
+    } catch (error) {
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : 'Nie udalo sie pobrac listy kalendarzy'
+      if (needsGoogleReconnect(message)) {
+        setGoogleStatus({ connected: false })
+        setGoogleCalendars([])
+        setSelectedCalendarId('')
+        hasLoadedCalendars.current = false
+        showToast('Polaczenie Google wygaslo. Kliknij "Polacz Google".', 'info')
+      } else {
+        showToast(message, 'error')
+      }
     } finally {
       setIsGoogleBusy(false)
     }

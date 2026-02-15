@@ -312,7 +312,8 @@ export async function generateShoppingList(
 export async function fetchGoogleStatus(): Promise<GoogleStatus> {
   const response = await apiFetch('/api/google/status')
   if (!response.ok) {
-    throw new Error('Failed to fetch Google status')
+    const data = await response.json().catch(() => null)
+    throw new Error(`${response.status}: ${data?.detail || 'Failed to fetch Google status'}`)
   }
   return response.json()
 }
@@ -320,7 +321,8 @@ export async function fetchGoogleStatus(): Promise<GoogleStatus> {
 export async function fetchGoogleAuthUrl(): Promise<GoogleAuthUrlResponse> {
   const response = await apiFetch('/api/google/oauth/start')
   if (!response.ok) {
-    throw new Error('Failed to start Google OAuth')
+    const data = await response.json().catch(() => null)
+    throw new Error(`${response.status}: ${data?.detail || 'Failed to start Google OAuth'}`)
   }
   return response.json()
 }
@@ -328,7 +330,8 @@ export async function fetchGoogleAuthUrl(): Promise<GoogleAuthUrlResponse> {
 export async function fetchGoogleCalendars(): Promise<GoogleCalendarItem[]> {
   const response = await apiFetch('/api/google/calendars')
   if (!response.ok) {
-    throw new Error('Failed to fetch Google calendars')
+    const data = await response.json().catch(() => null)
+    throw new Error(`${response.status}: ${data?.detail || 'Failed to fetch Google calendars'}`)
   }
   const data = (await response.json()) as GoogleCalendarListResponse
   return data.calendars ?? []
@@ -340,7 +343,8 @@ export async function selectGoogleCalendar(calendar_id: string): Promise<GoogleS
     body: JSON.stringify({ calendar_id }),
   })
   if (!response.ok) {
-    throw new Error('Failed to select Google calendar')
+    const data = await response.json().catch(() => null)
+    throw new Error(`${response.status}: ${data?.detail || 'Failed to select Google calendar'}`)
   }
   return response.json()
 }
@@ -354,7 +358,8 @@ export async function syncGooglePlan(
     body: JSON.stringify({ calendar_id, events }),
   })
   if (!response.ok) {
-    throw new Error('Failed to sync Google Calendar')
+    const data = await response.json().catch(() => null)
+    throw new Error(`${response.status}: ${data?.detail || 'Failed to sync Google Calendar'}`)
   }
   return response.json()
 }
