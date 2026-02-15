@@ -310,13 +310,18 @@ export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
                             i
                           </button>
                           {showNutritionInfo && (
-                            <div className="absolute top-7 right-0 z-20 w-64 rounded-lg border border-border bg-card p-2 text-xs text-muted-foreground shadow-lg">
+                            <div className="absolute top-7 right-0 z-20 hidden w-64 rounded-lg border border-border bg-card p-2 text-xs text-muted-foreground shadow-lg sm:block">
                               {confidenceTooltipText}
                             </div>
                           )}
                         </div>
                       )}
                     </div>
+                    {showNutritionInfo && confidenceTooltipText && (
+                      <div className="mt-2 rounded-lg border border-border bg-card p-2 text-xs text-muted-foreground sm:hidden">
+                        {confidenceTooltipText}
+                      </div>
+                    )}
                     {autoPortionMessage && (
                       <div className="mt-2 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 text-xs text-amber-800">
                         <Info className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
