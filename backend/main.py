@@ -546,6 +546,9 @@ PAN_DIAMETER_PORTION_TABLE = [
     (28.0, 30.0, 14),
 ]
 DEFAULT_PAN_PORTIONS = 12
+RECTANGULAR_PAN_CM2_PER_PORTION = 70.0
+MIN_RECTANGULAR_PAN_PORTIONS = 4
+MAX_RECTANGULAR_PAN_PORTIONS = 20
 DEFAULT_PORTION_WEIGHT_BY_TYPE_G = {
     "soup": 350.0,
     "dessert": 120.0,
@@ -679,6 +682,14 @@ def _map_pan_size_to_portions(min_cm: float, max_cm: float) -> int:
         if range_min <= avg <= range_max:
             return portions
     return DEFAULT_PAN_PORTIONS
+
+
+def _map_rectangular_pan_to_portions(width_cm: float, height_cm: float) -> int:
+    area_cm2 = max(1.0, width_cm * height_cm)
+    estimated = int(round(area_cm2 / RECTANGULAR_PAN_CM2_PER_PORTION))
+    if estimated <= 0:
+        return DEFAULT_PAN_PORTIONS
+    return max(MIN_RECTANGULAR_PAN_PORTIONS, min(MAX_RECTANGULAR_PAN_PORTIONS, estimated))
 
 
 def _extract_piece_weight_g(norm_text: str) -> Optional[float]:
@@ -977,6 +988,11 @@ def parse_yield_context(
     for pattern in servings_patterns:
         match = re.search(pattern, norm)
         if match:
+            # Guardrail: "forma 20 x 29 cm" should be interpreted as pan size, not serving count.
+            if re.search(r"\b(?:tortownica|forma|blacha|naczynie|brytfanna)\b", norm) and re.search(r"\bcm\b", norm):
+                continue
+            if re.search(r"\b\d+(?:[.,]\d+)?\s*[x×]\s*\d+(?:[.,]\d+)?\s*cm\b", norm):
+                continue
             count = _safe_portion_count(_parse_number_token(match.group(1)))
             if re.search(
                 rf"(?:porcj\w*|servings?)\s*[:\-]?\s*(?:okolo|ponad|do|~)?\s*{count}\s*(?:kg|g)\b",
@@ -1026,15 +1042,43 @@ def parse_yield_context(
                 piece_weight_g=piece_weight_g,
             )
 
-    pan_patterns = [
-        r"(?:tortownica|forma|blacha)[^\d]{0,20}(\d{2})(?:\s*[-–]\s*(\d{2}))?\s*cm\b",
-        r"\b(\d{2})(?:\s*[-–]\s*(\d{2}))?\s*cm\b[^\n]{0,20}(?:tortownica|forma|blacha)",
+    rectangular_pan_patterns = [
+        r"(?:tortownica|forma|blacha|naczynie|brytfanna)[^\d]{0,20}(\d{2}(?:[.,]\d+)?)\s*[x×]\s*(\d{2}(?:[.,]\d+)?)\s*cm\b",
+        r"\b(\d{2}(?:[.,]\d+)?)\s*[x×]\s*(\d{2}(?:[.,]\d+)?)\s*cm\b[^\n]{0,24}(?:tortownica|forma|blacha|naczynie|brytfanna)",
     ]
-    for pattern in pan_patterns:
+    for pattern in rectangular_pan_patterns:
         match = re.search(pattern, norm)
         if match:
-            min_cm = float(match.group(1))
-            max_cm = float(match.group(2) or match.group(1))
+            width = _parse_number_token(match.group(1))
+            height = _parse_number_token(match.group(2))
+            if width is None or height is None:
+                continue
+            min_cm = round(min(width, height), 1)
+            max_cm = round(max(width, height), 1)
+            portions = _map_rectangular_pan_to_portions(min_cm, max_cm)
+            return YieldContext(
+                mode="pan_size",
+                base_portions=portions,
+                servings_unit="servings",
+                yield_display_label=raw,
+                pan_diameter_min_cm=min_cm,
+                pan_diameter_max_cm=max_cm,
+                assumption_reason=f"Rectangular pan {min_cm:g}x{max_cm:g} cm mapped to {portions} portions",
+            )
+
+    round_pan_patterns = [
+        r"(?:tortownica|forma|blacha|naczynie|brytfanna)[^\d]{0,20}(\d{2}(?:[.,]\d+)?)(?:\s*[-–]\s*(\d{2}(?:[.,]\d+)?))?\s*cm\b",
+        r"\b(\d{2}(?:[.,]\d+)?)(?:\s*[-–]\s*(\d{2}(?:[.,]\d+)?))?\s*cm\b[^\n]{0,24}(?:tortownica|forma|blacha|naczynie|brytfanna)",
+    ]
+    for pattern in round_pan_patterns:
+        match = re.search(pattern, norm)
+        if match:
+            min_raw = _parse_number_token(match.group(1))
+            max_raw = _parse_number_token(match.group(2) or match.group(1))
+            if min_raw is None or max_raw is None:
+                continue
+            min_cm = float(min_raw)
+            max_cm = float(max_raw)
             portions = _map_pan_size_to_portions(min_cm, max_cm)
             return YieldContext(
                 mode="pan_size",
@@ -1043,7 +1087,7 @@ def parse_yield_context(
                 yield_display_label=raw,
                 pan_diameter_min_cm=min_cm,
                 pan_diameter_max_cm=max_cm,
-                assumption_reason=f"Pan size {int(min_cm)}-{int(max_cm)} cm mapped to {portions} portions",
+                assumption_reason=f"Pan size {min_cm:g}-{max_cm:g} cm mapped to {portions} portions",
             )
 
     total_weight_g = _extract_total_weight_g(norm)

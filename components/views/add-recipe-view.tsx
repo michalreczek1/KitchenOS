@@ -5,6 +5,7 @@ import { useState } from 'react'
 import { Link2, Sparkles, Loader2, CheckCircle2, AlertCircle, Wand2, PenLine, Plus, Trash2 } from 'lucide-react'
 import { parseRecipe, addManualRecipe, RECIPE_CATEGORIES, type Recipe, type RecipeCategory } from '@/lib/api'
 import { saveCustomRecipeCategory } from '@/lib/custom-recipe-categories'
+import { inferRecipeCategory } from '@/lib/recipe-category-inference'
 import { useToast } from '@/components/toast-provider'
 
 interface AddRecipeViewProps {
@@ -25,10 +26,12 @@ export function AddRecipeView({ onRecipeAdded }: AddRecipeViewProps) {
   const [title, setTitle] = useState('')
   const [ingredients, setIngredients] = useState<string[]>([''])
   const [instructions, setInstructions] = useState('')
-  const [category, setCategory] = useState<RecipeCategory>('obiady')
+  const [category, setCategory] = useState<RecipeCategory>('inne')
+  const [categoryTouched, setCategoryTouched] = useState(false)
   const [servings, setServings] = useState(4)
   const [servingsUnit, setServingsUnit] = useState<ServingsUnit>('servings')
-  const [urlCategory, setUrlCategory] = useState<RecipeCategory>('obiady')
+  const [urlCategory, setUrlCategory] = useState<RecipeCategory>('inne')
+  const [urlCategoryTouched, setUrlCategoryTouched] = useState(false)
 
   const handleUrlSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -39,12 +42,21 @@ export function AddRecipeView({ onRecipeAdded }: AddRecipeViewProps) {
 
     try {
       const recipe = await parseRecipe(url)
-      saveCustomRecipeCategory(recipe.id, urlCategory)
+      const suggestedCategory = inferRecipeCategory({
+        title: recipe.title,
+        ingredients: Array.isArray((recipe as Recipe & { ingredients?: string[] }).ingredients)
+          ? ((recipe as Recipe & { ingredients?: string[] }).ingredients as string[])
+          : [],
+      })
+      const categoryToSave = urlCategoryTouched ? urlCategory : suggestedCategory ?? urlCategory
+      saveCustomRecipeCategory(recipe.id, categoryToSave)
       setStatus('success')
       showToast('Przepis dodany pomyslnie!', 'success')
       onRecipeAdded(recipe)
       setTimeout(() => {
         setUrl('')
+        setUrlCategory('inne')
+        setUrlCategoryTouched(false)
         setStatus('idle')
       }, 2000)
     } catch {
@@ -66,7 +78,13 @@ export function AddRecipeView({ onRecipeAdded }: AddRecipeViewProps) {
     setIsLoading(true)
     try {
       const trimmedIngredients = ingredients.map((item) => item.trim()).filter(Boolean)
-      const categoryLabel = RECIPE_CATEGORIES.find((item) => item.value === category)?.label ?? category
+      const suggestedCategory = inferRecipeCategory({
+        title: title.trim(),
+        ingredients: trimmedIngredients,
+        rawText: instructions.trim(),
+      })
+      const categoryToSave = categoryTouched ? category : suggestedCategory ?? category
+      const categoryLabel = RECIPE_CATEGORIES.find((item) => item.value === categoryToSave)?.label ?? categoryToSave
       const portionsLine = servingsUnit === 'people' ? `Dla osob: ${servings}` : `Porcje: ${servings}`
       const contentParts = [
         title.trim(),
@@ -81,14 +99,15 @@ export function AddRecipeView({ onRecipeAdded }: AddRecipeViewProps) {
       const recipe = await addManualRecipe({
         content,
       })
-      saveCustomRecipeCategory(recipe.id, category)
+      saveCustomRecipeCategory(recipe.id, categoryToSave)
       showToast('Przepis dodany pomyslnie!', 'success')
       onRecipeAdded(recipe)
       // Reset form
       setTitle('')
       setIngredients([''])
       setInstructions('')
-      setCategory('obiady')
+      setCategory('inne')
+      setCategoryTouched(false)
       setServings(4)
       setServingsUnit('servings')
     } catch {
@@ -176,7 +195,10 @@ export function AddRecipeView({ onRecipeAdded }: AddRecipeViewProps) {
                   <button
                     key={cat.value}
                     type="button"
-                    onClick={() => setUrlCategory(cat.value)}
+                    onClick={() => {
+                      setUrlCategory(cat.value)
+                      setUrlCategoryTouched(true)
+                    }}
                     className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
                       urlCategory === cat.value
                         ? 'border-primary bg-primary/10 text-primary'
@@ -277,7 +299,10 @@ export function AddRecipeView({ onRecipeAdded }: AddRecipeViewProps) {
                 <button
                   key={cat.value}
                   type="button"
-                  onClick={() => setCategory(cat.value)}
+                  onClick={() => {
+                    setCategory(cat.value)
+                    setCategoryTouched(true)
+                  }}
                   className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
                     category === cat.value
                       ? 'border-primary bg-primary/10 text-primary'

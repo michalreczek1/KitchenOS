@@ -8,6 +8,7 @@ import { RecipeCard } from '@/components/recipe-card'
 import { RecipeModal } from '@/components/recipe-modal'
 import { useToast } from '@/components/toast-provider'
 import { saveCustomRecipeCategory } from '@/lib/custom-recipe-categories'
+import { inferRecipeCategory } from '@/lib/recipe-category-inference'
 
 interface DashboardViewProps {
   stats: Stats | null
@@ -32,9 +33,11 @@ export function DashboardView({
 }: DashboardViewProps) {
   const [activeTab, setActiveTab] = useState<'link' | 'manual'>('link')
   const [linkValue, setLinkValue] = useState('')
-  const [linkCategory, setLinkCategory] = useState<RecipeCategory>('obiady')
+  const [linkCategory, setLinkCategory] = useState<RecipeCategory>('inne')
+  const [linkCategoryTouched, setLinkCategoryTouched] = useState(false)
   const [manualText, setManualText] = useState('')
-  const [manualCategory, setManualCategory] = useState<RecipeCategory>('obiady')
+  const [manualCategory, setManualCategory] = useState<RecipeCategory>('inne')
+  const [manualCategoryTouched, setManualCategoryTouched] = useState(false)
   const [isImporting, setIsImporting] = useState(false)
   const [isSavingManual, setIsSavingManual] = useState(false)
   const [selectedRecipeId, setSelectedRecipeId] = useState<number | null>(null)
@@ -172,10 +175,19 @@ export function DashboardView({
                 setIsImporting(true)
                 try {
                   const recipe = await parseRecipe(linkValue.trim())
-                  saveCustomRecipeCategory(recipe.id, linkCategory)
+                  const suggestedCategory = inferRecipeCategory({
+                    title: recipe.title,
+                    ingredients: Array.isArray((recipe as Recipe & { ingredients?: string[] }).ingredients)
+                      ? ((recipe as Recipe & { ingredients?: string[] }).ingredients as string[])
+                      : [],
+                  })
+                  const categoryToSave = linkCategoryTouched ? linkCategory : suggestedCategory ?? linkCategory
+                  saveCustomRecipeCategory(recipe.id, categoryToSave)
                   onRecipeAdded(recipe)
                   showToast('Przepis dodany pomyslnie!', 'success')
                   setLinkValue('')
+                  setLinkCategory('inne')
+                  setLinkCategoryTouched(false)
                   onViewRecipes()
                 } catch {
                   showToast('Nie udalo sie zaimportowac przepisu', 'error')
@@ -222,7 +234,10 @@ export function DashboardView({
                 <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Kategoria</span>
                 <select
                   value={linkCategory}
-                  onChange={(event) => setLinkCategory(event.target.value as RecipeCategory)}
+                  onChange={(event) => {
+                    setLinkCategory(event.target.value as RecipeCategory)
+                    setLinkCategoryTouched(true)
+                  }}
                   className="w-full rounded-xl border border-border/50 bg-background/80 px-3 py-2 text-sm text-foreground focus:border-primary/50 focus:outline-none focus:ring-2 focus:ring-primary/20 sm:max-w-[220px]"
                 >
                   {RECIPE_CATEGORIES.map((category) => (
@@ -244,10 +259,14 @@ export function DashboardView({
                 setIsSavingManual(true)
                 try {
                   const recipe = await addManualRecipe({ content: manualText.trim() })
-                  saveCustomRecipeCategory(recipe.id, manualCategory)
+                  const suggestedCategory = inferRecipeCategory({ rawText: manualText.trim() })
+                  const categoryToSave = manualCategoryTouched ? manualCategory : suggestedCategory ?? manualCategory
+                  saveCustomRecipeCategory(recipe.id, categoryToSave)
                   onRecipeAdded(recipe)
                   showToast('Przepis dodany pomyslnie!', 'success')
                   setManualText('')
+                  setManualCategory('inne')
+                  setManualCategoryTouched(false)
                   onViewRecipes()
                 } catch {
                   showToast('Nie udalo sie dodac przepisu', 'error')
@@ -265,7 +284,10 @@ export function DashboardView({
                 <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Kategoria</span>
                 <select
                   value={manualCategory}
-                  onChange={(event) => setManualCategory(event.target.value as RecipeCategory)}
+                  onChange={(event) => {
+                    setManualCategory(event.target.value as RecipeCategory)
+                    setManualCategoryTouched(true)
+                  }}
                   className="w-full rounded-xl border border-border/50 bg-background/80 px-3 py-2 text-sm text-foreground focus:border-primary/50 focus:outline-none focus:ring-2 focus:ring-primary/20 sm:max-w-[220px]"
                 >
                   {RECIPE_CATEGORIES.map((category) => (

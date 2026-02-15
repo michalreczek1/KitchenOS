@@ -95,6 +95,12 @@ export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
         : recipe?.nutrition_source === 'ai'
           ? 'estymacja AI'
           : null
+  const confidenceTooltipText =
+    confidenceLabel || sourceLabel
+      ? `${confidenceLabel ? `Pewność estymacji: ${confidenceLabel}.` : ''}${
+          sourceLabel ? `${confidenceLabel ? ' ' : ''}Źródło: ${sourceLabel}.` : ''
+        }`
+      : null
   const nutritionRows = [
     { label: 'Kalorie', value: caloriesLabel },
     { label: 'Białko', value: proteinLabel },
@@ -289,21 +295,26 @@ export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
                     ))}
                   </ul>
                   <div className={`mt-4 rounded-xl border border-border bg-muted/30 text-sm ${denseNutritionLayout ? 'p-3' : 'p-4'}`}>
-                    <h4 className="font-semibold text-foreground">Wartości odżywcze</h4>
-                    <p className="mt-2 text-muted-foreground">{planSentence}</p>
+                    <div className="flex items-center gap-2">
+                      <h4 className="font-semibold text-foreground">Wartości odżywcze</h4>
+                      {confidenceTooltipText && (
+                        <span
+                          className="inline-flex h-5 min-w-5 cursor-help items-center justify-center rounded-full border border-border px-1 text-xs font-semibold leading-none text-muted-foreground"
+                          title={confidenceTooltipText}
+                          aria-label={confidenceTooltipText}
+                        >
+                          *
+                        </span>
+                      )}
+                    </div>
                     {autoPortionMessage && (
                       <div className="mt-2 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 text-xs text-amber-800">
                         <Info className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
                         <span>{autoPortionMessage}</span>
                       </div>
                     )}
-                    <p className="mt-1 text-muted-foreground">{nutritionBasisSentence}</p>
-                    {(confidenceLabel || sourceLabel) && (
-                      <p className="mt-1 text-muted-foreground">
-                        {confidenceLabel ? `Pewność estymacji: ${confidenceLabel}.` : null}
-                        {sourceLabel ? ` Źródło: ${sourceLabel}.` : null}
-                      </p>
-                    )}
+                    <p className="mt-2 text-muted-foreground">{planSentence}</p>
+                    {!autoPortionMessage && <p className="mt-1 text-muted-foreground">{nutritionBasisSentence}</p>}
                     {hasAnyNutrition ? (
                       <ul className={`mt-3 text-muted-foreground ${denseNutritionLayout ? 'space-y-1.5' : 'space-y-2'}`}>
                         {nutritionRows.map((row) => (
