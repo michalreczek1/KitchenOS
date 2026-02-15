@@ -17,14 +17,33 @@ const normalizeToList = (value: string[] | string | null | undefined) => {
   return value.split(/\r?\n+/).map((entry) => entry.trim()).filter(Boolean)
 }
 
+const getPolishPluralForm = (count: number, singular: string, few: string, many: string) => {
+  const absCount = Math.abs(count)
+  const mod10 = absCount % 10
+  const mod100 = absCount % 100
+  if (absCount === 1) return singular
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few
+  return many
+}
+
 const formatPortionsLabel = (count: number, unit: 'servings' | 'people') => {
+  const unitLabel =
+    unit === 'people'
+      ? getPolishPluralForm(count, 'osoba', 'osoby', 'osób')
+      : getPolishPluralForm(count, 'porcja', 'porcje', 'porcji')
+  return `${count} ${unitLabel}`
+}
+
+const formatRecipePlanSentence = (count: number, unit: 'servings' | 'people') => {
   if (unit === 'people') {
-    if (count === 1) return `${count} osoby`
-    return `${count} osob`
+    return `Przepis zaplanowano dla ${formatPortionsLabel(count, unit)}.`
   }
-  if (count === 1) return `${count} porcja`
-  if (count < 5) return `${count} porcje`
-  return `${count} porcji`
+  return `Przepis zaplanowano na ${formatPortionsLabel(count, unit)}.`
+}
+
+const formatNutritionBasisSentence = (unit: 'servings' | 'people') => {
+  if (unit === 'people') return 'Wartości odżywcze wyliczono na 1 osobę.'
+  return 'Wartości odżywcze wyliczono na 1 porcję.'
 }
 
 const formatNutritionValue = (value?: number | null, suffix = 'g') => {
@@ -189,24 +208,20 @@ export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
                     ))}
                   </ul>
                   <div className="mt-4 rounded-xl border border-border bg-muted/30 p-3 text-sm">
-                    {servingsUnit === 'people' ? (
-                      <p className="text-muted-foreground">
-                        W przepisie zaplanowano porcje dla {formatPortionsLabel(basePortions, servingsUnit)}.
-                      </p>
-                    ) : (
-                      <p className="text-muted-foreground">
-                        W przepisie zaplanowano {formatPortionsLabel(basePortions, servingsUnit)}.
-                      </p>
-                    )}
+                    <p className="text-muted-foreground">{formatRecipePlanSentence(basePortions, servingsUnit)}</p>
+                    <p className="mt-1 text-muted-foreground">{formatNutritionBasisSentence(servingsUnit)}</p>
+                    <h4 className="mt-3 font-semibold text-foreground">Wartości odżywcze</h4>
                     {hasNutrition ? (
                       <div className="mt-2 space-y-1 text-muted-foreground">
-                        <p>Wartosc odzywcza bialko: {proteinLabel}</p>
-                        <p>Wartosc odzywcza weglowodany: {carbsLabel}</p>
-                        <p>Wartosc odzywcza blonnik: {fiberLabel}</p>
-                        <p>Wartosc odzywcza ladunek glikemiczny: {glycemicLoadLabel}</p>
+                        <p>Białko: {proteinLabel}</p>
+                        <p>Węglowodany: {carbsLabel}</p>
+                        <p>Błonnik: {fiberLabel}</p>
+                        <p>Ładunek glikemiczny: {glycemicLoadLabel}</p>
                       </div>
                     ) : (
-                      <p className="mt-2 text-muted-foreground">Wartosci odzywcze niedostepne dla tego przepisu.</p>
+                      <p className="mt-2 text-muted-foreground">
+                        Wartości odżywcze niedostępne dla tego przepisu.
+                      </p>
                     )}
                   </div>
                 </div>

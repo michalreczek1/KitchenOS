@@ -1,4 +1,4 @@
-import os
+﻿import os
 import re
 import requests
 import datetime
@@ -35,15 +35,16 @@ logger = logging.getLogger(__name__)
 
 # --- KONFIGURACJA ---
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 client = None
 if not GROQ_API_KEY:
-    logger.warning("GROQ_API_KEY nie jest ustawiony. Endpointy AI bÄdÄ niedostÄpne.")
+    logger.warning("GROQ_API_KEY nie jest ustawiony. Endpointy AI bĂ„Â™dĂ„Â… niedostĂ„Â™pne.")
 else:
     try:
         client = Groq(api_key=GROQ_API_KEY)
     except Exception as e:
-        logger.error(f"BÅÄd inicjalizacji Groq client: {e}")
-        # Fallback - sprÃ³buj bez dodatkowych parametrÃ³w
+        logger.error(f"BĂ…Â‚Ă„Â…d inicjalizacji Groq client: {e}")
+        # Fallback - sprĂÂłbuj bez dodatkowych parametrĂÂłw
         import groq
 
         client = groq.Groq(api_key=GROQ_API_KEY)
@@ -75,17 +76,17 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    logger.info("ð KitchenOS Backend uruchamia siÄ...")
+    logger.info("Ă°ÂźÂšÂ€ KitchenOS Backend uruchamia siĂ„Â™...")
     # Uwaga: w produkcji uruchamiaj migracje Alembic (create_all nie jest zalecane).
     yield
     # Shutdown
-    logger.info("ð KitchenOS Backend wyÅÄcza siÄ...")
+    logger.info("Ă°ÂźÂ›Â‘ KitchenOS Backend wyĂ…Â‚Ă„Â…cza siĂ„Â™...")
 
 
 app = FastAPI(
     title="KitchenOS API",
     version="2.0.0",
-    description="Inteligentny system planowania posiÅkÃ³w i zakupÃ³w",
+    description="Inteligentny system planowania posiĂ…Â‚kĂÂłw i zakupĂÂłw",
     lifespan=lifespan,
 )
 
@@ -125,7 +126,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 def get_password_hash(password: str) -> str:
     if _password_too_long(password):
-        raise HTTPException(status_code=400, detail="HasÄ¹âo jest za dÄ¹âugie (limit 72 znaki)")
+        raise HTTPException(status_code=400, detail="HasĂ„ÂąĂ˘Â€Âšo jest za dĂ„ÂąĂ˘Â€Âšugie (limit 72 znaki)")
     return pwd_context.hash(password)
 
 
@@ -140,7 +141,7 @@ def get_current_user(
 ) -> UserDB:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="NieprawidÅowe dane uwierzytelniajÄce",
+        detail="NieprawidĂ…Â‚owe dane uwierzytelniajĂ„Â…ce",
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
@@ -183,20 +184,20 @@ def decode_google_state_token(state: str) -> int:
     try:
         payload = jwt.decode(state, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
     except JWTError:
-        raise HTTPException(status_code=400, detail="NieprawidÄ¹âowy token stanu OAuth")
+        raise HTTPException(status_code=400, detail="NieprawidĂ„ÂąĂ˘Â€Âšowy token stanu OAuth")
     user_id = payload.get("sub")
     if not user_id:
-        raise HTTPException(status_code=400, detail="Brak uÄ¹Ä½ytkownika w tokenie OAuth")
+        raise HTTPException(status_code=400, detail="Brak uĂ„ÂąĂ„Â˝ytkownika w tokenie OAuth")
     try:
         return int(user_id)
     except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail="NieprawidÄ¹âowy identyfikator uÄ¹Ä½ytkownika")
+        raise HTTPException(status_code=400, detail="NieprawidĂ„ÂąĂ˘Â€Âšowy identyfikator uĂ„ÂąĂ„Â˝ytkownika")
 
 
 def get_google_token_record(db: Session, user_id: int) -> GoogleCalendarDB:
     record = db.query(GoogleCalendarDB).filter(GoogleCalendarDB.owner_id == user_id).first()
     if not record:
-        raise HTTPException(status_code=400, detail="Brak poÄ¹âÃâ¦czenia z Google Calendar")
+        raise HTTPException(status_code=400, detail="Brak poĂ„ÂąĂ˘Â€ÂšĂÂ„Ă˘Â€Â¦czenia z Google Calendar")
     return record
 
 
@@ -204,7 +205,7 @@ def refresh_google_access_token(db: Session, record: GoogleCalendarDB) -> str:
     if record.expires_at and record.expires_at > datetime.datetime.utcnow() + datetime.timedelta(seconds=60):
         return record.access_token
     if not record.refresh_token:
-        raise HTTPException(status_code=401, detail="Brak refresh token. PoÄ¹âÃâ¦cz Google ponownie.")
+        raise HTTPException(status_code=401, detail="Brak refresh token. PoĂ„ÂąĂ˘Â€ÂšĂÂ„Ă˘Â€Â¦cz Google ponownie.")
 
     ensure_google_config()
     response = requests.post(
@@ -218,7 +219,7 @@ def refresh_google_access_token(db: Session, record: GoogleCalendarDB) -> str:
         timeout=20,
     )
     if not response.ok:
-        raise HTTPException(status_code=502, detail="Nie udaÄ¹âo siÃâ¢ odÄ¹âºwieÄ¹Ä½yÃâ¡ tokenu Google")
+        raise HTTPException(status_code=502, detail="Nie udaĂ„ÂąĂ˘Â€Âšo siĂÂ„Ă˘Â„Â˘ odĂ„ÂąĂ˘Â€ÂşwieĂ„ÂąĂ„Â˝yĂÂ„Ă˘Â€Âˇ tokenu Google")
     data = response.json()
     record.access_token = data.get("access_token", record.access_token)
     expires_in = data.get("expires_in")
@@ -268,7 +269,7 @@ def require_admin(user: UserDB = Depends(get_current_user)) -> UserDB:
     if not user.is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Brak uprawnieÅ administratora",
+            detail="Brak uprawnieĂ…Â„ administratora",
         )
     return user
 
@@ -288,7 +289,7 @@ def log_parse_attempt(user_id: int, url: str, status_value: str, error: Optional
         )
         log_db.commit()
     except Exception:
-        logger.error("Nie udaÅo siÄ zapisaÄ logu parsowania", exc_info=True)
+        logger.error("Nie udaĂ…Â‚o siĂ„Â™ zapisaĂ„Â‡ logu parsowania", exc_info=True)
         log_db.rollback()
     finally:
         log_db.close()
@@ -513,16 +514,16 @@ class AdminStatsResponse(BaseModel):
 # --- POMOCNICZE FUNKCJE ---
 def extract_portion_count(yield_text: str) -> int:
     """
-    WyciÄga liczbÄ porcji z tekstu yield.
-    Zawiera zabezpieczenie (Sanity Check) przed pomyleniem gramÃ³w z porcjami.
+    WyciĂ„Â…ga liczbĂ„Â™ porcji z tekstu yield.
+    Zawiera zabezpieczenie (Sanity Check) przed pomyleniem gramĂÂłw z porcjami.
     """
     if not yield_text:
         return 1
 
-    # 1. PrÃ³bujemy dopasowaÄ wzÃ³r: "4 porcji" lub "porcji 4"
-    # Ignorujemy wielkoÅÄ liter (re.IGNORECASE)
+    # 1. PrĂÂłbujemy dopasowaĂ„Â‡ wzĂÂłr: "4 porcji" lub "porcji 4"
+    # Ignorujemy wielkoĂ…Â›Ă„Â‡ liter (re.IGNORECASE)
     match = re.search(
-        r"(?:porcj|osÃ³b|serving|porcji?)\D*?(\d+)|(\d+)\D*?(?:porcj|osÃ³b|serving|porcji?)",
+        r"(?:porcj|osĂÂłb|serving|porcji?)\D*?(\d+)|(\d+)\D*?(?:porcj|osĂÂłb|serving|porcji?)",
         yield_text,
         re.IGNORECASE,
     )
@@ -532,23 +533,23 @@ def extract_portion_count(yield_text: str) -> int:
         count = int(val)
 
         # --- SANITY CHECK ---
-        # JeÅli przepis jest na wiÄcej niÅ¼ 50 osÃ³b, to prawdopodobnie bÅÄd (np. 380g zamiast 4 porcji)
+        # JeĂ…Â›li przepis jest na wiĂ„Â™cej niĂ…ÂĽ 50 osĂÂłb, to prawdopodobnie bĂ…Â‚Ă„Â…d (np. 380g zamiast 4 porcji)
         if count > 50:
             print(
-                f"â ï¸ WARNING: Wykryto podejrzanÄ iloÅÄ porcji ({count}) w tekÅcie: '{yield_text}'. ZaÅoÅ¼yÅem, Å¼e to jest waga. ResetujÄ do 1."
+                f"Ă˘ÂšÂ ĂŻÂ¸ÂŹ WARNING: Wykryto podejrzanĂ„Â… iloĂ…Â›Ă„Â‡ porcji ({count}) w tekĂ…Â›cie: '{yield_text}'. ZaĂ…Â‚oĂ…ÂĽyĂ…Â‚em, Ă…ÂĽe to jest waga. ResetujĂ„Â™ do 1."
             )
             return 1
 
         return count
 
-    # 2. Fallback: JeÅli nie znalazÅo sÅowa kluczowego, bierze pierwszÄ cyfrÄ
+    # 2. Fallback: JeĂ…Â›li nie znalazĂ…Â‚o sĂ…Â‚owa kluczowego, bierze pierwszĂ„Â… cyfrĂ„Â™
     match = re.search(r"\d+", yield_text)
     if match:
         count = int(match.group())
 
-        # Takie samo sprawdzenie bezpieczeÅstwa
+        # Takie samo sprawdzenie bezpieczeĂ…Â„stwa
         if count > 50:
-            print(f"â ï¸ WARNING: Fallback wykryÅ duÅ¼Ä liczbÄ ({count}). ResetujÄ do 1.")
+            print(f"Ă˘ÂšÂ ĂŻÂ¸ÂŹ WARNING: Fallback wykryĂ…Â‚ duĂ…ÂĽĂ„Â… liczbĂ„Â™ ({count}). ResetujĂ„Â™ do 1.")
             return 1
 
         return count
@@ -640,7 +641,7 @@ def estimate_nutrition_with_ai(
     try:
         completion = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
-            model="llama-3.3-70b-versatile",
+            model=GROQ_MODEL,
             temperature=0,
             response_format={"type": "json_object"},
         )
@@ -657,7 +658,7 @@ def estimate_nutrition_with_ai(
 
 
 def fetch_html_safely(url: str, timeout: int = 10) -> str:
-    """Bezpieczne pobieranie HTML z obsÅugÄ bÅÄdÃ³w"""
+    """Bezpieczne pobieranie HTML z obsĂ…Â‚ugĂ„Â… bĂ…Â‚Ă„Â™dĂÂłw"""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -669,14 +670,14 @@ def fetch_html_safely(url: str, timeout: int = 10) -> str:
         response.raise_for_status()
         return response.text
     except requests.RequestException as e:
-        logger.error(f"BÅÄd pobierania URL {url}: {str(e)}")
+        logger.error(f"BĂ…Â‚Ă„Â…d pobierania URL {url}: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Nie moÅ¼na pobraÄ strony: {str(e)}",
+            detail=f"Nie moĂ…ÂĽna pobraĂ„Â‡ strony: {str(e)}",
         )
 
 def ics_escape(text: str) -> str:
-    """Ucieczka znakÃ³w zgodna z iCalendar (Å¼eby nie psuÄ pliku ICS)."""
+    """Ucieczka znakĂÂłw zgodna z iCalendar (Ă…ÂĽeby nie psuĂ„Â‡ pliku ICS)."""
     if not text:
         return ""
     return (
@@ -705,7 +706,7 @@ async def root():
 
 @app.get("/health", tags=["System"])
 async def health_check(db: Session = Depends(get_db)):
-    """SzczegÃ³Åowy health check z testowaniem bazy danych"""
+    """SzczegĂÂłĂ…Â‚owy health check z testowaniem bazy danych"""
     try:
         # Test DB connection
         db.execute(text("SELECT 1"))
@@ -725,11 +726,11 @@ async def health_check(db: Session = Depends(get_db)):
 @app.post("/api/auth/bootstrap", response_model=UserResponse, tags=["Auth"])
 async def bootstrap_admin(request: BootstrapRequest, db: Session = Depends(get_db)):
     if ADMIN_BOOTSTRAP_TOKEN and request.token != ADMIN_BOOTSTRAP_TOKEN:
-        raise HTTPException(status_code=403, detail="NieprawidÅowy token bootstrap")
+        raise HTTPException(status_code=403, detail="NieprawidĂ…Â‚owy token bootstrap")
 
     existing_users = db.query(UserDB).count()
     if existing_users > 0:
-        raise HTTPException(status_code=400, detail="Administrator juÅ¼ istnieje")
+        raise HTTPException(status_code=400, detail="Administrator juĂ…ÂĽ istnieje")
 
     user = UserDB(
         email=request.email.lower(),
@@ -748,7 +749,7 @@ async def register_user(request: RegisterRequest, db: Session = Depends(get_db))
     email = request.email.lower()
     existing = db.query(UserDB).filter(UserDB.email == email).first()
     if existing:
-        raise HTTPException(status_code=400, detail="UÅ¼ytkownik juÅ¼ istnieje")
+        raise HTTPException(status_code=400, detail="UĂ…ÂĽytkownik juĂ…ÂĽ istnieje")
 
     user = UserDB(
         first_name=request.first_name.strip(),
@@ -768,9 +769,9 @@ async def register_user(request: RegisterRequest, db: Session = Depends(get_db))
 async def login(payload: LoginRequest, db: Session = Depends(get_db)):
     user = db.query(UserDB).filter(UserDB.email == payload.email.lower()).first()
     if not user or not verify_password(payload.password, user.hashed_password):
-        raise HTTPException(status_code=401, detail="NieprawidÅowy email lub hasÅo")
+        raise HTTPException(status_code=401, detail="NieprawidĂ…Â‚owy email lub hasĂ…Â‚o")
     if not user.is_active:
-        raise HTTPException(status_code=403, detail="Konto nieaktywne. Skontaktuj siÄ z administratorem")
+        raise HTTPException(status_code=403, detail="Konto nieaktywne. Skontaktuj siĂ„Â™ z administratorem")
 
     user.last_login_at = datetime.datetime.utcnow()
     db.commit()
@@ -851,7 +852,7 @@ async def google_oauth_callback(code: str, state: str, db: Session = Depends(get
     user_id = decode_google_state_token(state)
     user = db.query(UserDB).filter(UserDB.id == user_id).first()
     if not user:
-        raise HTTPException(status_code=404, detail="UÄ¹Ä½ytkownik nie znaleziony")
+        raise HTTPException(status_code=404, detail="UĂ„ÂąĂ„Â˝ytkownik nie znaleziony")
 
     response = requests.post(
         "https://oauth2.googleapis.com/token",
@@ -865,7 +866,7 @@ async def google_oauth_callback(code: str, state: str, db: Session = Depends(get
         timeout=20,
     )
     if not response.ok:
-        raise HTTPException(status_code=502, detail="Nie udaÄ¹âo siÃâ¢ poÄ¹âÃâ¦czyÃâ¡ z Google")
+        raise HTTPException(status_code=502, detail="Nie udaĂ„ÂąĂ˘Â€Âšo siĂÂ„Ă˘Â„Â˘ poĂ„ÂąĂ˘Â€ÂšĂÂ„Ă˘Â€Â¦czyĂÂ„Ă˘Â€Âˇ z Google")
 
     data = response.json()
     expires_in = data.get("expires_in")
@@ -915,7 +916,7 @@ async def google_calendars(current_user: UserDB = Depends(get_current_user), db:
         "https://www.googleapis.com/calendar/v3/users/me/calendarList",
     )
     if not response.ok:
-        raise HTTPException(status_code=502, detail="Nie udaÄ¹âo siÃâ¢ pobraÃâ¡ kalendarzy")
+        raise HTTPException(status_code=502, detail="Nie udaĂ„ÂąĂ˘Â€Âšo siĂÂ„Ă˘Â„Â˘ pobraĂÂ„Ă˘Â€Âˇ kalendarzy")
     data = response.json()
     calendars = [
         GoogleCalendarItem(
@@ -942,7 +943,7 @@ async def google_calendar_select(
         f"https://www.googleapis.com/calendar/v3/users/me/calendarList/{payload.calendar_id}",
     )
     if not response.ok:
-        raise HTTPException(status_code=400, detail="Nie znaleziono kalendarza lub brak uprawnieÄ¹â")
+        raise HTTPException(status_code=400, detail="Nie znaleziono kalendarza lub brak uprawnieĂ„ÂąĂ˘Â€Âž")
     data = response.json()
     record.calendar_id = payload.calendar_id
     record.calendar_summary = data.get("summary")
@@ -962,7 +963,7 @@ async def google_plan_sync(
     db: Session = Depends(get_db),
 ):
     if not payload.events:
-        raise HTTPException(status_code=400, detail="Brak wydarzeÄ¹â do synchronizacji")
+        raise HTTPException(status_code=400, detail="Brak wydarzeĂ„ÂąĂ˘Â€Âž do synchronizacji")
 
     record = get_google_token_record(db, current_user.id)
     calendar_id = payload.calendar_id or record.calendar_id
@@ -982,7 +983,7 @@ async def google_plan_sync(
         try:
             dates.append(datetime.date.fromisoformat(event.date))
         except ValueError:
-            raise HTTPException(status_code=400, detail=f"NieprawidÄ¹âowa data: {event.date}")
+            raise HTTPException(status_code=400, detail=f"NieprawidĂ„ÂąĂ˘Â€Âšowa data: {event.date}")
 
     date_min = min(dates)
     date_max = max(dates)
@@ -1010,7 +1011,7 @@ async def google_plan_sync(
             params=params,
         )
         if not response.ok:
-            raise HTTPException(status_code=502, detail="Nie udaÄ¹âo siÃâ¢ pobraÃâ¡ wydarzeÄ¹â z Google")
+            raise HTTPException(status_code=502, detail="Nie udaĂ„ÂąĂ˘Â€Âšo siĂÂ„Ă˘Â„Â˘ pobraĂÂ„Ă˘Â€Âˇ wydarzeĂ„ÂąĂ˘Â€Âž z Google")
         data = response.json()
         for item in data.get("items", []):
             event_id = item.get("id")
@@ -1083,7 +1084,7 @@ async def create_user(
     email = payload.email.lower()
     existing = db.query(UserDB).filter(UserDB.email == email).first()
     if existing:
-        raise HTTPException(status_code=400, detail="UÅ¼ytkownik juÅ¼ istnieje")
+        raise HTTPException(status_code=400, detail="UĂ…ÂĽytkownik juĂ…ÂĽ istnieje")
 
     password = payload.password or secrets.token_urlsafe(10)
     user = UserDB(
@@ -1110,7 +1111,7 @@ async def update_user(
 ):
     user = db.query(UserDB).filter(UserDB.id == user_id).first()
     if not user:
-        raise HTTPException(status_code=404, detail="UÅ¼ytkownik nie znaleziony")
+        raise HTTPException(status_code=404, detail="UĂ…ÂĽytkownik nie znaleziony")
     if payload.is_active is not None:
         user.is_active = payload.is_active
     if payload.is_admin is not None:
@@ -1126,7 +1127,7 @@ async def reset_user_password(
 ):
     user = db.query(UserDB).filter(UserDB.id == user_id).first()
     if not user:
-        raise HTTPException(status_code=404, detail="UÅ¼ytkownik nie znaleziony")
+        raise HTTPException(status_code=404, detail="UĂ…ÂĽytkownik nie znaleziony")
 
     temp_password = secrets.token_urlsafe(10)
     user.hashed_password = get_password_hash(temp_password)
@@ -1140,7 +1141,7 @@ async def delete_user(
 ):
     user = db.query(UserDB).filter(UserDB.id == user_id).first()
     if not user:
-        raise HTTPException(status_code=404, detail="UÅ¼ytkownik nie znaleziony")
+        raise HTTPException(status_code=404, detail="UĂ…ÂĽytkownik nie znaleziony")
 
     db.query(ParseLogDB).filter(ParseLogDB.owner_id == user_id).delete()
     db.query(PlanDB).filter(PlanDB.owner_id == user_id).delete()
@@ -1219,7 +1220,7 @@ async def parse_and_save_recipe(
 ):
     """
     Parsuje przepis z podanego URL i zapisuje w bazie danych.
-    JeÅli przepis juÅ¼ istnieje, aktualizuje jego dane.
+    JeĂ…Â›li przepis juĂ…ÂĽ istnieje, aktualizuje jego dane.
     """
     url_str = str(recipe_in.url)
 
@@ -1232,19 +1233,19 @@ async def parse_and_save_recipe(
         # Parsuj przepis
         scraper = scrape_html(html=html_content, org_url=url_str)
 
-        # WyciÄgnij dane
+        # WyciĂ„Â…gnij dane
         title = scraper.title()
         if not title:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Nie moÅ¼na wyciÄgnÄÄ tytuÅu przepisu z tej strony",
+                detail="Nie moĂ…ÂĽna wyciĂ„Â…gnĂ„Â…Ă„Â‡ tytuĂ…Â‚u przepisu z tej strony",
             )
 
         ingredients = scraper.ingredients()
         if not ingredients:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Nie moÅ¼na wyciÄgnÄÄ skÅadnikÃ³w z tej strony",
+                detail="Nie moĂ…ÂĽna wyciĂ„Â…gnĂ„Â…Ă„Â‡ skĂ…Â‚adnikĂÂłw z tej strony",
             )
 
         yields_text = scraper.yields()
@@ -1263,7 +1264,7 @@ async def parse_and_save_recipe(
             base_portions=base_portions,
         )
 
-        # SprawdÅº czy przepis juÅ¼ istnieje
+        # SprawdĂ…Âş czy przepis juĂ…ÂĽ istnieje
         recipe = (
             db.query(RecipeDB)
             .filter(RecipeDB.owner_id == current_user.id, RecipeDB.url == url_str)
@@ -1272,7 +1273,7 @@ async def parse_and_save_recipe(
 
         if recipe:
             logger.info(f"Recipe already exists, updating: {title}")
-            # Aktualizuj istniejÄcy przepis
+            # Aktualizuj istniejĂ„Â…cy przepis
             recipe.title = title
             recipe.ingredients = ingredients
             recipe.instructions = instructions
@@ -1287,7 +1288,7 @@ async def parse_and_save_recipe(
             recipe.updated_at = datetime.datetime.utcnow()
         else:
             logger.info(f"Creating new recipe: {title}")
-            # UtwÃ³rz nowy przepis
+            # UtwĂÂłrz nowy przepis
             recipe = RecipeDB(
                 owner_id=current_user.id,
                 title=title,
@@ -1318,7 +1319,7 @@ async def parse_and_save_recipe(
         log_parse_attempt(current_user.id, url_str, "error", str(e))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"BÅÄd podczas przetwarzania przepisu: {str(e)}",
+            detail=f"BĂ…Â‚Ă„Â…d podczas przetwarzania przepisu: {str(e)}",
         )
 
 
@@ -1332,7 +1333,7 @@ async def get_available_recipes(
     current_user: UserDB = Depends(get_current_user),
 ):
     """
-    Zwraca listÄ wszystkich dostÄpnych przepisÃ³w z paginacjÄ.
+    Zwraca listĂ„Â™ wszystkich dostĂ„Â™pnych przepisĂÂłw z paginacjĂ„Â….
     """
     try:
         recipes = (
@@ -1361,7 +1362,7 @@ async def get_available_recipes(
         logger.error(f"Error fetching recipes: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="BÅÄd podczas pobierania przepisÃ³w",
+            detail="BĂ…Â‚Ă„Â…d podczas pobierania przepisĂÂłw",
         )
 
 
@@ -1372,7 +1373,7 @@ async def get_recipe(
     current_user: UserDB = Depends(get_current_user),
 ):
     """
-    Zwraca szczegÃ³Åy konkretnego przepisu.
+    Zwraca szczegĂÂłĂ…Â‚y konkretnego przepisu.
     """
     recipe = (
         db.query(RecipeDB)
@@ -1382,7 +1383,7 @@ async def get_recipe(
     if not recipe:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Przepis o ID {recipe_id} nie zostaÅ znaleziony",
+            detail=f"Przepis o ID {recipe_id} nie zostaĂ…Â‚ znaleziony",
         )
     rating = (
         db.query(RecipeRatingDB)
@@ -1409,7 +1410,7 @@ async def set_recipe_rating(
     current_user: UserDB = Depends(get_current_user),
 ):
     """
-    Ustawia ocenÄ przepisu (1-5) dla aktualnego uÅ¼ytkownika.
+    Ustawia ocenĂ„Â™ przepisu (1-5) dla aktualnego uĂ…ÂĽytkownika.
     """
     recipe = (
         db.query(RecipeDB)
@@ -1419,7 +1420,7 @@ async def set_recipe_rating(
     if not recipe:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Przepis o ID {recipe_id} nie zostaÅ znaleziony",
+            detail=f"Przepis o ID {recipe_id} nie zostaĂ…Â‚ znaleziony",
         )
 
     existing = (
@@ -1466,7 +1467,7 @@ async def delete_recipe(
     if not recipe:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Przepis o ID {recipe_id} nie zostaÅ znaleziony",
+            detail=f"Przepis o ID {recipe_id} nie zostaĂ…Â‚ znaleziony",
         )
 
     db.delete(recipe)
@@ -1483,8 +1484,8 @@ async def generate_shopping_list(
     current_user: UserDB = Depends(get_current_user),
 ):
     """
-    Generuje zoptymalizowanÄ listÄ zakupÃ³w na podstawie wybranych przepisÃ³w.
-    UÅ¼ywa AI do inteligentnego ÅÄczenia i kategoryzacji skÅadnikÃ³w.
+    Generuje zoptymalizowanĂ„Â… listĂ„Â™ zakupĂÂłw na podstawie wybranych przepisĂÂłw.
+    UĂ…ÂĽywa AI do inteligentnego Ă…Â‚Ă„Â…czenia i kategoryzacji skĂ…Â‚adnikĂÂłw.
     """
     logger.info(f"Generating shopping list for {len(request.selections)} recipes")
 
@@ -1514,19 +1515,19 @@ async def generate_shopping_list(
     if missing_recipes:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Nie znaleziono przepisÃ³w o ID: {missing_recipes}",
+            detail=f"Nie znaleziono przepisĂÂłw o ID: {missing_recipes}",
         )
 
     if not compiled_data:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Brak danych do wygenerowania listy zakupÃ³w",
+            detail="Brak danych do wygenerowania listy zakupĂÂłw",
         )
 
     if client is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="AI jest niedostÄpne. Skonfiguruj GROQ_API_KEY.",
+            detail="AI jest niedostĂ„Â™pne. Skonfiguruj GROQ_API_KEY.",
         )
 
     # Ulepszone prompt dla AI (ASCII-only, bez problemow z kodowaniem)
@@ -1579,7 +1580,7 @@ async def generate_shopping_list(
     try:
         chat_completion = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
-            model="llama-3.3-70b-versatile",
+            model=GROQ_MODEL,
             temperature=0.1,
             response_format={"type": "json_object"},
         )
@@ -1603,13 +1604,13 @@ async def generate_shopping_list(
         logger.error(f"AI returned invalid JSON: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="AI zwrÃ³ciÅo nieprawidÅowy format danych",
+            detail="AI zwrĂÂłciĂ…Â‚o nieprawidĂ…Â‚owy format danych",
         )
     except Exception as e:
         logger.error(f"Error generating shopping list: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"BÅÄd podczas generowania listy: {str(e)}",
+            detail=f"BĂ…Â‚Ă„Â…d podczas generowania listy: {str(e)}",
         )
 
 
@@ -1639,18 +1640,18 @@ async def get_stats(
         logger.error(f"Error fetching stats: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="BÅÄd podczas pobierania statystyk",
+            detail="BĂ…Â‚Ă„Â…d podczas pobierania statystyk",
         )
 
 
-# --- ENDPOINTY PLANERA (POPRZEÅIONE NA GÃRÄ) ---
+# --- ENDPOINTY PLANERA (POPRZEĂ…ÂIONE NA GĂÂ“RĂ„Â) ---
 
 
 @app.get("/api/plan/load", tags=["Planner"])
 async def load_plan(
     db: Session = Depends(get_db), current_user: UserDB = Depends(get_current_user)
 ):
-    """Åaduje zapisany plan uÅ¼ytkownika."""
+    """Ă…Âaduje zapisany plan uĂ…ÂĽytkownika."""
     plan_entry = (
         db.query(PlanDB).filter(PlanDB.owner_id == current_user.id).first()
     )
@@ -1665,11 +1666,11 @@ async def save_plan(
     db: Session = Depends(get_db),
     current_user: UserDB = Depends(get_current_user),
 ):
-    """Zapisuje plan uÅ¼ytkownika."""
-    # Walidacja wejÅcia
+    """Zapisuje plan uĂ…ÂĽytkownika."""
+    # Walidacja wejĂ…Â›cia
     selections = plan_data.get("selections", [])
     if not isinstance(selections, list):
-        raise HTTPException(status_code=400, detail="Plan musi byÄ listÄ")
+        raise HTTPException(status_code=400, detail="Plan musi byĂ„Â‡ listĂ„Â…")
 
     plan_entry = (
         db.query(PlanDB).filter(PlanDB.owner_id == current_user.id).first()
@@ -1699,38 +1700,38 @@ async def create_custom_recipe(
     current_user: UserDB = Depends(get_current_user),
 ):
     """
-    Pozwala uÅ¼ytkownikowi wkleiÄ surowy tekst przepisu.
-    AI parsuje tytuÅ, skÅadniki i instrukcje.
+    Pozwala uĂ…ÂĽytkownikowi wkleiĂ„Â‡ surowy tekst przepisu.
+    AI parsuje tytuĂ…Â‚, skĂ…Â‚adniki i instrukcje.
     """
     content = (raw_data.get("content") or "").strip()
     if not content:
-        raise HTTPException(status_code=400, detail="Tekst przepisu nie moÅ¼e byÄ pusty")
+        raise HTTPException(status_code=400, detail="Tekst przepisu nie moĂ…ÂĽe byĂ„Â‡ pusty")
 
     logger.info("Parsing custom recipe from raw text...")
 
     if client is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="AI jest niedostÄpne. Skonfiguruj GROQ_API_KEY.",
+            detail="AI jest niedostĂ„Â™pne. Skonfiguruj GROQ_API_KEY.",
         )
 
     prompt = f"""
-Zanalizuj poniÅ¼szy tekst przepisu kucharskiego.
-WyodrÄbnij dane i zwrÃ³Ä je jako JSON.
+Zanalizuj poniĂ…ÂĽszy tekst przepisu kucharskiego.
+WyodrĂ„Â™bnij dane i zwrĂÂłĂ„Â‡ je jako JSON.
 
 Zasady:
-1. JeÅli nie ma tytuÅu, nadaj wÅasny np. "Przepis Domowy".
-2. SkÅadniki: ZwrÃ³Ä listÄ stringÃ³w. UsuÅ numery z wierszy skÅadnikÃ³w.
-3. Porcje: JeÅli nie jest podane, przyjmij 1.
+1. JeĂ…Â›li nie ma tytuĂ…Â‚u, nadaj wĂ…Â‚asny np. "Przepis Domowy".
+2. SkĂ…Â‚adniki: ZwrĂÂłĂ„Â‡ listĂ„Â™ stringĂÂłw. UsuĂ…Â„ numery z wierszy skĂ…Â‚adnikĂÂłw.
+3. Porcje: JeĂ…Â›li nie jest podane, przyjmij 1.
 
-TEKST WEJÅCIOWY:
+TEKST WEJĂ…ÂšCIOWY:
 {content}
 
 ZWROT (tylko JSON):
 {{
-  "title": "TytuÅ",
+  "title": "TytuĂ…Â‚",
   "portions": 1,
-  "ingredients": ["SkÅadnik 1", "SkÅadnik 2"],
+  "ingredients": ["SkĂ…Â‚adnik 1", "SkĂ…Â‚adnik 2"],
   "instructions": "Instrukcje krok po kroku..."
 }}
 """
@@ -1738,7 +1739,7 @@ ZWROT (tylko JSON):
     try:
         chat_completion = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
-            model="llama-3.3-70b-versatile",
+            model=GROQ_MODEL,
             temperature=0.1,
             response_format={"type": "json_object"},
         )
@@ -1764,7 +1765,7 @@ ZWROT (tylko JSON):
             base_portions=base_portions,
         )
 
-        # Ikona domyÅlna
+        # Ikona domyĂ…Â›lna
         generic_icon = "https://cdn-icons-png.flaticon.com/512/3081/3081557.png"
 
         # --- KLUCZOWE: unikalny URL, bo w bazie url ma unique=True ---
@@ -1772,7 +1773,7 @@ ZWROT (tylko JSON):
 
         recipe = RecipeDB(
             owner_id=current_user.id,
-            title=(parsed_data.get("title") or "Przepis WÅasny").strip(),
+            title=(parsed_data.get("title") or "Przepis WĂ…Â‚asny").strip(),
             url=custom_url,
             image_url=generic_icon,
             ingredients=parsed_ingredients,
@@ -1795,7 +1796,7 @@ ZWROT (tylko JSON):
         logger.error(f"Error parsing custom recipe: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail="AI nie poradziÅo sobie z tekstem. SprÃ³buj formatu: 'TytuÅ\\nSkÅadniki...\\nInstrukcje...'",
+            detail="AI nie poradziĂ…Â‚o sobie z tekstem. SprĂÂłbuj formatu: 'TytuĂ…Â‚\\nSkĂ…Â‚adniki...\\nInstrukcje...'",
         )
 
 def _normalize_inspire_ingredients(raw: Any) -> List[str]:
@@ -1825,9 +1826,9 @@ def _normalize_instruction_list(raw: Any) -> List[str]:
 
 def _build_inspire_response(payload: dict, user_ingredients: List[str]) -> InspireRecipeResponse:
     if not isinstance(payload, dict):
-        raise HTTPException(status_code=502, detail="AI zwrÄÅciÄ¹âo nieprawidÄ¹âowe dane")
+        raise HTTPException(status_code=502, detail="AI zwrĂ„Â‚Ă…Â‚ciĂ„ÂąĂ˘Â€Âšo nieprawidĂ„ÂąĂ˘Â€Âšowe dane")
 
-    title = str(payload.get("title") or "Inspiracja z lodÄÅwki").strip()
+    title = str(payload.get("title") or "Inspiracja z lodĂ„Â‚Ă…Â‚wki").strip()
     description = str(payload.get("description") or "").strip() or None
     difficulty = str(payload.get("difficulty") or "").strip() or None
     prep_time = str(payload.get("prep_time") or "").strip() or None
@@ -1857,7 +1858,7 @@ def _build_inspire_response(payload: dict, user_ingredients: List[str]) -> Inspi
 
     instructions = _normalize_instruction_list(payload.get("instructions"))
     if not ingredients or not instructions:
-        raise HTTPException(status_code=502, detail="AI zwrÄÅciÄ¹âo niekompletny przepis")
+        raise HTTPException(status_code=502, detail="AI zwrĂ„Â‚Ă…Â‚ciĂ„ÂąĂ˘Â€Âšo niekompletny przepis")
 
     return InspireRecipeResponse(
         title=title,
@@ -1877,47 +1878,47 @@ async def inspire_recipe(
 ):
     ingredients = _normalize_inspire_ingredients(raw_payload)
     if not ingredients:
-        raise HTTPException(status_code=400, detail="Lista skÄ¹âadnikÄÅw nie moÄ¹Ä½e byÃâ¡ pusta")
+        raise HTTPException(status_code=400, detail="Lista skĂ„ÂąĂ˘Â€ÂšadnikĂ„Â‚Ă…Â‚w nie moĂ„ÂąĂ„Â˝e byĂÂ„Ă˘Â€Âˇ pusta")
 
     if client is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="AI jest niedostÃâ¢pne. Skonfiguruj GROQ_API_KEY.",
+            detail="AI jest niedostĂÂ„Ă˘Â„Â˘pne. Skonfiguruj GROQ_API_KEY.",
         )
 
     prompt = f"""
-Role: JesteÄ¹âº kreatywnym Szefem Kuchni i ekspertem Zero Waste wspÄÅÄ¹âpracujÃâ¦cym z systemem KitchenOS.
-Task: Na podstawie listy skÄ¹âadnikÄÅw podanych przez uÄ¹Ä½ytkownika, zaproponuj JEDEN konkretny, smaczny i realistyczny przepis.
+Role: JesteĂ„ÂąĂ˘Â€Âş kreatywnym Szefem Kuchni i ekspertem Zero Waste wspĂ„Â‚Ă…Â‚Ă„ÂąĂ˘Â€ÂšpracujĂÂ„Ă˘Â€Â¦cym z systemem KitchenOS.
+Task: Na podstawie listy skĂ„ÂąĂ˘Â€ÂšadnikĂ„Â‚Ă…Â‚w podanych przez uĂ„ÂąĂ„Â˝ytkownika, zaproponuj JEDEN konkretny, smaczny i realistyczny przepis.
 
 ZASADY:
-1. SkÄ¹âadniki: Maksymalnie wykorzystaj to, co podaÄ¹â uÄ¹Ä½ytkownik. MoÄ¹Ä½esz zaÄ¹âoÄ¹Ä½yÃâ¡, Ä¹Ä½e uÄ¹Ä½ytkownik posiada "bazÃâ¢" (sÄÅl, pieprz, woda, olej, podstawowe przyprawy).
-2. Format: ZwrÄÅÃâ¡ ODPOWIEDÄ¹Â¹ WYÄ¹ÂÃâCZNIE W FORMACIE JSON. Nie pisz Ä¹Ä½adnych wstÃâ¢pÄÅw ani podsumowaÄ¹â.
-3. JÃâ¢zyk: Odpowiadaj w jÃâ¢zyku polskim.
-4. KreatywnoÄ¹âºÃâ¡: JeÄ¹âºli skÄ¹âadniki do siebie nie pasujÃâ¦, sprÄÅbuj znaleÄ¹ÅÃâ¡ najbardziej sensowne poÄ¹âÃâ¦czenie (np. kuchnia fusion).
+1. SkĂ„ÂąĂ˘Â€Âšadniki: Maksymalnie wykorzystaj to, co podaĂ„ÂąĂ˘Â€Âš uĂ„ÂąĂ„Â˝ytkownik. MoĂ„ÂąĂ„Â˝esz zaĂ„ÂąĂ˘Â€ÂšoĂ„ÂąĂ„Â˝yĂÂ„Ă˘Â€Âˇ, Ă„ÂąĂ„Â˝e uĂ„ÂąĂ„Â˝ytkownik posiada "bazĂÂ„Ă˘Â„Â˘" (sĂ„Â‚Ă…Â‚l, pieprz, woda, olej, podstawowe przyprawy).
+2. Format: ZwrĂ„Â‚Ă…Â‚ĂÂ„Ă˘Â€Âˇ ODPOWIEDĂ„ÂąĂ‚Âą WYĂ„ÂąĂ‚ÂĂÂ„Ă˘Â€ÂžCZNIE W FORMACIE JSON. Nie pisz Ă„ÂąĂ„Â˝adnych wstĂÂ„Ă˘Â„Â˘pĂ„Â‚Ă…Â‚w ani podsumowaĂ„ÂąĂ˘Â€Âž.
+3. JĂÂ„Ă˘Â„Â˘zyk: Odpowiadaj w jĂÂ„Ă˘Â„Â˘zyku polskim.
+4. KreatywnoĂ„ÂąĂ˘Â€ÂşĂÂ„Ă˘Â€Âˇ: JeĂ„ÂąĂ˘Â€Âşli skĂ„ÂąĂ˘Â€Âšadniki do siebie nie pasujĂÂ„Ă˘Â€Â¦, sprĂ„Â‚Ă…Â‚buj znaleĂ„ÂąĂ…ÂźĂÂ„Ă˘Â€Âˇ najbardziej sensowne poĂ„ÂąĂ˘Â€ÂšĂÂ„Ă˘Â€Â¦czenie (np. kuchnia fusion).
 
 STRUKTURA JSON:
 {{
   "title": "Nazwa dania",
-  "description": "KrÄÅtki, apetyczny opis (max 2 zdania).",
-  "difficulty": "Ä¹Âatwe/Ä¹Å¡rednie/Trudne",
+  "description": "KrĂ„Â‚Ă…Â‚tki, apetyczny opis (max 2 zdania).",
+  "difficulty": "Ă„ÂąĂ‚Âatwe/Ă„ÂąĂ…Âˇrednie/Trudne",
   "prep_time": "czas w minutach",
   "ingredients": [
-    {{"item": "nazwa", "amount": "iloÄ¹âºÃâ¡", "is_extra": true/false}}
+    {{"item": "nazwa", "amount": "iloĂ„ÂąĂ˘Â€ÂşĂÂ„Ă˘Â€Âˇ", "is_extra": true/false}}
   ],
   "instructions": ["Krok 1...", "Krok 2..."],
   "tips": "Opcjonalna porada szefa kuchni."
 }}
 
-*is_extra: oznacz jako true, jeÄ¹âºli skÄ¹âadnika nie ma na liÄ¹âºcie uÄ¹Ä½ytkownika, ale jest niezbÃâ¢dny do wykonania dania.*
+*is_extra: oznacz jako true, jeĂ„ÂąĂ˘Â€Âşli skĂ„ÂąĂ˘Â€Âšadnika nie ma na liĂ„ÂąĂ˘Â€Âşcie uĂ„ÂąĂ„Â˝ytkownika, ale jest niezbĂÂ„Ă˘Â„Â˘dny do wykonania dania.*
 
-SKÄ¹ÂADNIKI UÄ¹Â»YTKOWNIKA:
+SKĂ„ÂąĂ‚ÂADNIKI UĂ„ÂąĂ‚Â»YTKOWNIKA:
 {json.dumps(ingredients, ensure_ascii=False)}
 """
 
     try:
         chat_completion = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
-            model="llama-3.3-70b-versatile",
+            model=GROQ_MODEL,
             temperature=0.2,
             response_format={"type": "json_object"},
         )
@@ -1928,19 +1929,19 @@ SKÄ¹ÂADNIKI UÄ¹Â»YTKOWNIKA:
             start = ai_response.find("{")
             end = ai_response.rfind("}")
             if start == -1 or end == -1:
-                raise HTTPException(status_code=502, detail="AI zwrÄÅciÄ¹âo nieprawidÄ¹âowy JSON")
+                raise HTTPException(status_code=502, detail="AI zwrĂ„Â‚Ă…Â‚ciĂ„ÂąĂ˘Â€Âšo nieprawidĂ„ÂąĂ˘Â€Âšowy JSON")
             parsed = json.loads(ai_response[start : end + 1])
 
         return _build_inspire_response(parsed, ingredients)
     except HTTPException:
         raise
     except ValidationError:
-        raise HTTPException(status_code=502, detail="AI zwrÄÅciÄ¹âo niepoprawny format danych")
+        raise HTTPException(status_code=502, detail="AI zwrĂ„Â‚Ă…Â‚ciĂ„ÂąĂ˘Â€Âšo niepoprawny format danych")
     except Exception as e:
         logger.error(f"Error inspiring recipe: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Nie udaÄ¹âo siÃâ¢ wygenerowaÃâ¡ inspiracji",
+            detail="Nie udaĂ„ÂąĂ˘Â€Âšo siĂÂ„Ă˘Â„Â˘ wygenerowaĂÂ„Ă˘Â€Âˇ inspiracji",
         )
 
 
@@ -1957,7 +1958,7 @@ async def create_recipe(
 ):
     title = payload.title.strip()
     if not title:
-        raise HTTPException(status_code=400, detail="TytuÄ¹â nie moÄ¹Ä½e byÃâ¡ pusty")
+        raise HTTPException(status_code=400, detail="TytuĂ„ÂąĂ˘Â€Âš nie moĂ„ÂąĂ„Â˝e byĂÂ„Ă˘Â€Âˇ pusty")
 
     ingredients: List[str] = []
     if payload.ingredients:
@@ -1972,7 +1973,7 @@ async def create_recipe(
             ingredients = [str(item).strip() for item in payload.ingredients if str(item).strip()]
 
     if not ingredients:
-        raise HTTPException(status_code=400, detail="Lista skÄ¹âadnikÄÅw nie moÄ¹Ä½e byÃâ¡ pusta")
+        raise HTTPException(status_code=400, detail="Lista skĂ„ÂąĂ˘Â€ÂšadnikĂ„Â‚Ă…Â‚w nie moĂ„ÂąĂ„Â˝e byĂÂ„Ă˘Â€Âˇ pusta")
 
     instructions_list = _normalize_instruction_list(payload.instructions)
     instructions_text = "\n".join(instructions_list).strip()
@@ -2016,8 +2017,8 @@ async def export_calendar(
 ):
     """
     Generuje poprawny plik ICS:
-    - DTEND jest dniem nastÄpnym (dla zdarzeÅ caÅodniowych)
-    - UID jest stabilny (brak duplikatÃ³w po ponownym imporcie)
+    - DTEND jest dniem nastĂ„Â™pnym (dla zdarzeĂ…Â„ caĂ…Â‚odniowych)
+    - UID jest stabilny (brak duplikatĂÂłw po ponownym imporcie)
     - tekst jest escapowany (bez psucia formatu)
     """
     selections = plan_data.get("selections", [])
@@ -2026,8 +2027,8 @@ async def export_calendar(
 
     today = datetime.date.today()
     day_map = {
-        "PoniedziaÅek": 0, "Wtorek": 1, "Åroda": 2, "Czwartek": 3,
-        "PiÄtek": 4, "Sobota": 5, "Niedziela": 6
+        "PoniedziaĂ…Â‚ek": 0, "Wtorek": 1, "Ă…Âšroda": 2, "Czwartek": 3,
+        "PiĂ„Â…tek": 4, "Sobota": 5, "Niedziela": 6
     }
 
     now_str = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
@@ -2038,10 +2039,10 @@ async def export_calendar(
         "PRODID:-//KitchenOS//PL//PL\r\n"
         "CALSCALE:GREGORIAN\r\n"
         "METHOD:PUBLISH\r\n"
-        "X-WR-CALNAME:Plan ObiadÃ³w KitchenOS\r\n"
+        "X-WR-CALNAME:Plan ObiadĂÂłw KitchenOS\r\n"
     )
 
-    # Licznik, Å¼eby ten sam przepis tego samego dnia mÃ³gÅ wystÄpiÄ kilka razy
+    # Licznik, Ă…ÂĽeby ten sam przepis tego samego dnia mĂÂłgĂ…Â‚ wystĂ„Â…piĂ„Â‡ kilka razy
     uid_counters = {}
 
     for item in selections:
@@ -2057,21 +2058,21 @@ async def export_calendar(
         if not recipe:
             continue
 
-        day_name = item.get("day") or "PoniedziaÅek"
+        day_name = item.get("day") or "PoniedziaĂ…Â‚ek"
         day_offset = day_map.get(day_name, 0)
 
-        # wyznacz datÄ docelowÄ w tym/na nastÄpnym tygodniu
+        # wyznacz datĂ„Â™ docelowĂ„Â… w tym/na nastĂ„Â™pnym tygodniu
         days_since_monday = day_offset - today.weekday()
         target_date = today + datetime.timedelta(days=days_since_monday)
         if target_date < today:
             target_date += datetime.timedelta(days=7)
 
         date_str = target_date.strftime("%Y%m%d")
-        end_date_str = (target_date + datetime.timedelta(days=1)).strftime("%Y%m%d")  # DTEND = dzieÅ nastÄpny
+        end_date_str = (target_date + datetime.timedelta(days=1)).strftime("%Y%m%d")  # DTEND = dzieĂ…Â„ nastĂ„Â™pny
 
         portions_val = int(item.get("portions") or 1)
 
-        # stabilny UID: przepis + data + kolejnoÅÄ wystÄpienia w danym dniu
+        # stabilny UID: przepis + data + kolejnoĂ…Â›Ă„Â‡ wystĂ„Â…pienia w danym dniu
         key = (recipe.id, date_str)
         uid_counters[key] = uid_counters.get(key, 0) + 1
         occ = uid_counters[key]
@@ -2081,8 +2082,8 @@ async def export_calendar(
         if recipe.ingredients and len(recipe.ingredients) > 5:
             ing_str += "..."
 
-        summary = ics_escape(f"ð³ {recipe.title} ({portions_val} porcji)")
-        description = ics_escape(f"SkÅadniki: {ing_str}\n\nID Przepisu: {recipe.id}")
+        summary = ics_escape(f"Ă°ÂźÂŤÂł {recipe.title} ({portions_val} porcji)")
+        description = ics_escape(f"SkĂ…Â‚adniki: {ing_str}\n\nID Przepisu: {recipe.id}")
 
         ics_content += (
             "BEGIN:VEVENT\r\n"
@@ -2110,3 +2111,4 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True, log_level="info")
+
