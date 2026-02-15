@@ -78,13 +78,27 @@ export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
 
   const proteinLabel = formatNutritionValue(recipe?.nutrition_protein_g)
   const carbsLabel = formatNutritionValue(recipe?.nutrition_carbs_g)
+  const fatLabel = formatNutritionValue(recipe?.nutrition_fat_g)
   const fiberLabel = formatNutritionValue(recipe?.nutrition_fiber_g)
   const glycemicLoadLabel = formatNutritionValue(recipe?.nutrition_glycemic_load, '')
   const caloriesLabel = formatNutritionValue(recipe?.nutrition_calories_kcal, 'kcal')
+  const confidenceLabel =
+    typeof recipe?.nutrition_confidence_score === 'number' && !Number.isNaN(recipe.nutrition_confidence_score)
+      ? `${Math.round(recipe.nutrition_confidence_score)}%`
+      : null
+  const sourceLabel =
+    recipe?.nutrition_source === 'page_100g'
+      ? 'dane strony (W 100 g)'
+      : recipe?.nutrition_source === 'mixed'
+        ? 'źródło mieszane'
+        : recipe?.nutrition_source === 'ai'
+          ? 'estymacja AI'
+          : null
   const nutritionRows = [
     { label: 'Kalorie', value: caloriesLabel },
     { label: 'Białko', value: proteinLabel },
     { label: 'Węglowodany', value: carbsLabel },
+    { label: 'Tłuszcze', value: fatLabel },
     { label: 'Błonnik', value: fiberLabel },
     { label: 'Ładunek glikemiczny', value: glycemicLoadLabel },
   ]
@@ -271,6 +285,12 @@ export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
                     <h4 className="font-semibold text-foreground">Wartości odżywcze</h4>
                     <p className="mt-2 text-muted-foreground">{planSentence}</p>
                     <p className="mt-1 text-muted-foreground">{nutritionBasisSentence}</p>
+                    {(confidenceLabel || sourceLabel) && (
+                      <p className="mt-1 text-muted-foreground">
+                        {confidenceLabel ? `Pewność estymacji: ${confidenceLabel}.` : null}
+                        {sourceLabel ? ` Źródło: ${sourceLabel}.` : null}
+                      </p>
+                    )}
                     {hasAnyNutrition ? (
                       <ul className={`mt-3 text-muted-foreground ${denseNutritionLayout ? 'space-y-1.5' : 'space-y-2'}`}>
                         {nutritionRows.map((row) => (

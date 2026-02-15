@@ -53,10 +53,12 @@ class RecipeDB(Base):
     pan_diameter_max_cm = Column(Float, nullable=True)
     nutrition_protein_g = Column(Float, nullable=True)
     nutrition_carbs_g = Column(Float, nullable=True)
+    nutrition_fat_g = Column(Float, nullable=True)
     nutrition_fiber_g = Column(Float, nullable=True)
     nutrition_glycemic_load = Column(Float, nullable=True)
     nutrition_calories_kcal = Column(Float, nullable=True)
     nutrition_source = Column(String, nullable=True)
+    nutrition_confidence_score = Column(Float, nullable=True)
 
 
 class RecipeRatingDB(Base):

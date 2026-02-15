@@ -452,10 +452,12 @@ class RecipeResponse(BaseModel):
     pan_diameter_max_cm: Optional[float] = None
     nutrition_protein_g: Optional[float] = None
     nutrition_carbs_g: Optional[float] = None
+    nutrition_fat_g: Optional[float] = None
     nutrition_fiber_g: Optional[float] = None
     nutrition_glycemic_load: Optional[float] = None
     nutrition_calories_kcal: Optional[float] = None
     nutrition_source: Optional[Literal["page_100g", "ai", "mixed"]] = None
+    nutrition_confidence_score: Optional[float] = None
     created_at: datetime.datetime
     ingredients: List[str] = []
     instructions: Optional[str] = None
@@ -550,6 +552,18 @@ DEFAULT_PORTION_WEIGHT_BY_TYPE_G = {
     "default": 250.0,
 }
 YIELD_NUMBER_LIMIT = 200
+SNACK_PORTION_WEIGHT_G = 35.0
+SNACK_TOTAL_WEIGHT_THRESHOLD_G = 500.0
+LOW_CONFIDENCE_TERMS = (
+    "dowolna ilosc",
+    "dowolna ilość",
+    "garść",
+    "garsc",
+    "szczypta",
+    "do smaku",
+    "wedlug uznania",
+    "według uznania",
+)
 
 
 def _normalize_text(value: Optional[str]) -> str:
@@ -609,7 +623,25 @@ def _detect_recipe_type(title: str, ingredients: List[str], instructions: List[s
     return "default"
 
 
+def _is_snack_like_recipe(title: str, ingredients: List[str], instructions: List[str]) -> bool:
+    blob = _normalize_text(" ".join([title, " ".join(ingredients), " ".join(instructions)]))
+    snack_keywords = (
+        "przekask",
+        "snack",
+        "baton",
+        "kulk",
+        "orzech",
+        "migdal",
+        "karmel",
+        "cukierki",
+        "ciasteczk",
+    )
+    return any(keyword in blob for keyword in snack_keywords)
+
+
 def _get_standard_portion_weight_g(title: str, ingredients: List[str], instructions: List[str]) -> float:
+    if _is_snack_like_recipe(title, ingredients, instructions):
+        return SNACK_PORTION_WEIGHT_G
     recipe_type = _detect_recipe_type(title, ingredients, instructions)
     return DEFAULT_PORTION_WEIGHT_BY_TYPE_G.get(recipe_type, DEFAULT_PORTION_WEIGHT_BY_TYPE_G["default"])
 
@@ -741,25 +773,36 @@ def extract_yield_text_from_page(scraper: Any, html_content: str) -> str:
     return ""
 
 
-def _estimate_total_weight_from_ingredients(ingredients: List[str]) -> Optional[float]:
+def _extract_ingredient_weight_breakdown(ingredients: List[str]) -> dict:
     total_g = 0.0
+    water_g = 0.0
+    oil_g = 0.0
+    dry_starch_g = 0.0
+
     for ingredient in ingredients:
         norm = _normalize_text(ingredient)
         if not norm:
             continue
 
         unit_matches = re.findall(r"(\d+(?:[.,]\d+)?)\s*(kg|g|ml|l)\b", norm)
+        ingredient_weight_g = 0.0
         if unit_matches:
             for number_raw, unit in unit_matches:
                 value = _parse_number_token(number_raw)
                 if value is None or value <= 0:
                     continue
-                if unit == "kg":
-                    total_g += value * 1000.0
-                elif unit == "l":
-                    total_g += value * 1000.0
+                if unit in ("kg", "l"):
+                    ingredient_weight_g += value * 1000.0
                 else:
-                    total_g += value
+                    ingredient_weight_g += value
+            total_g += ingredient_weight_g
+
+            if "woda" in norm:
+                water_g += ingredient_weight_g
+            if any(token in norm for token in ("olej", "oliwa", "maslo klarowane", "masło klarowane", "smalec")):
+                oil_g += ingredient_weight_g
+            if any(token in norm for token in ("makaron", "ryz", "kasz", "bulgur", "quinoa")):
+                dry_starch_g += ingredient_weight_g
             continue
 
         if "jaj" in norm:
@@ -767,6 +810,65 @@ def _estimate_total_weight_from_ingredients(ingredients: List[str]) -> Optional[
             if eggs_match:
                 total_g += int(eggs_match.group(1)) * 60.0
 
+    return {
+        "total_g": round(total_g, 1),
+        "water_g": round(water_g, 1),
+        "oil_g": round(oil_g, 1),
+        "dry_starch_g": round(dry_starch_g, 1),
+    }
+
+
+def _infer_process_tags(title: str, ingredients: List[str], instructions: List[str]) -> set[str]:
+    text_blob = _normalize_text(" ".join([title, " ".join(ingredients), " ".join(instructions)]))
+    tags: set[str] = set()
+
+    if re.search(r"\b(karmeliz|reduk|odpar|piec|piekarnik|zapiec)\w*", text_blob):
+        tags.add("reduction")
+    if re.search(r"\b(ugotuj|gotuj|gotowac|wrzacej wodzie|wrzatku)\b", text_blob) and re.search(
+        r"\b(makaron|ryz|kasz|bulgur|quinoa)\b", text_blob
+    ):
+        tags.add("hydration")
+    if re.search(r"\b(smaz|smazenie|podsmaz|fryt)\w*", text_blob):
+        tags.add("frying")
+    return tags
+
+
+def _adjust_weight_for_process(
+    *,
+    total_weight_g: float,
+    title: str,
+    ingredients: List[str],
+    instructions: List[str],
+) -> tuple[float, List[str]]:
+    breakdown = _extract_ingredient_weight_breakdown(ingredients)
+    process_tags = _infer_process_tags(title, ingredients, instructions)
+    adjusted_weight = float(total_weight_g)
+    assumptions: List[str] = []
+
+    if "reduction" in process_tags and breakdown["water_g"] > 0:
+        retention = 0.05 if "karmel" in _normalize_text(title) else 0.2
+        evaporated = breakdown["water_g"] * (1.0 - retention)
+        adjusted_weight -= evaporated
+        assumptions.append(f"Proces redukcji/pieczenia: odparowano ~{evaporated:.0f} g wody")
+
+    if "frying" in process_tags and breakdown["oil_g"] > 0:
+        retained_oil = breakdown["oil_g"] * 0.1
+        discarded_oil = breakdown["oil_g"] - retained_oil
+        adjusted_weight -= discarded_oil
+        assumptions.append(f"Smażenie: przyjęto absorpcję ~{retained_oil:.0f} g tłuszczu")
+
+    if "hydration" in process_tags and breakdown["dry_starch_g"] > 0:
+        absorbed_water = breakdown["dry_starch_g"] * 1.5
+        adjusted_weight += absorbed_water
+        assumptions.append(f"Hydratacja: dodano ~{absorbed_water:.0f} g wchłoniętej wody")
+
+    adjusted_weight = max(1.0, adjusted_weight)
+    return round(adjusted_weight, 1), assumptions
+
+
+def _estimate_total_weight_from_ingredients(ingredients: List[str]) -> Optional[float]:
+    breakdown = _extract_ingredient_weight_breakdown(ingredients)
+    total_g = breakdown["total_g"]
     if total_g <= 0:
         return None
     return round(total_g, 1)
@@ -944,9 +1046,20 @@ def resolve_yield_context_weights(
     if context.portion_weight_g and context.total_weight_g:
         return context
 
+    total_weight_from_context = context.total_weight_g is not None
     total_weight_g = context.total_weight_g
     if total_weight_g is None:
         total_weight_g = _estimate_total_weight_from_ingredients(ingredients)
+        if total_weight_g is not None:
+            adjusted_weight_g, assumptions = _adjust_weight_for_process(
+                total_weight_g=total_weight_g,
+                title=title,
+                ingredients=ingredients,
+                instructions=instructions,
+            )
+            total_weight_g = adjusted_weight_g
+            if assumptions and not context.assumption_reason:
+                context.assumption_reason = "; ".join(assumptions)
     if total_weight_g is None:
         total_weight_g = estimate_total_weight_with_ai(title, ingredients, instructions)
 
@@ -961,11 +1074,25 @@ def resolve_yield_context_weights(
         context.mode = "total_weight_only"
         context.assumption_reason = f"Estimated portions from total weight using standard {standard_weight_g:.0f} g"
 
+    # Guardrail: snacks/desserts should not default to one giant portion.
+    if (
+        context.mode in ("unknown", "total_weight_only")
+        and portions <= 1
+        and total_weight_g >= SNACK_TOTAL_WEIGHT_THRESHOLD_G
+        and _is_snack_like_recipe(title, ingredients, instructions)
+    ):
+        portions = max(1, round(total_weight_g / SNACK_PORTION_WEIGHT_G))
+        context.base_portions = portions
+        context.mode = "total_weight_only"
+        context.assumption_reason = f"Snack-like recipe: used {SNACK_PORTION_WEIGHT_G:.0f} g per portion"
+
     portion_weight = round(total_weight_g / portions, 1)
     context.total_weight_g = round(total_weight_g, 1)
     context.portion_weight_g = portion_weight
     if context.mode == "unknown":
         context.assumption_reason = "Estimated total and per-portion weight from ingredients"
+    if total_weight_from_context and not context.assumption_reason:
+        context.assumption_reason = "Used total weight provided by recipe yield"
     return context
 
 
@@ -1007,7 +1134,7 @@ def _coerce_nutrition_number(value: Any) -> Optional[float]:
 
 
 def _parse_nutrition_payload(payload: dict) -> Optional[dict]:
-    keys = ("protein_g", "carbs_g", "fiber_g", "glycemic_load", "calories_kcal")
+    keys = ("protein_g", "carbs_g", "fat_g", "fiber_g", "glycemic_load", "calories_kcal")
     parsed = {}
     for key in keys:
         value = _coerce_nutrition_number(payload.get(key))
@@ -1060,6 +1187,11 @@ def extract_nutrition_per_100g_from_page(scraper: Any, html_content: str) -> dic
             if protein is not None:
                 parsed["protein_g"] = protein
             continue
+        if any(token in key_norm for token in ("fat", "tluszcz", "tluszcze")):
+            fat = _extract_gram_value(value_text)
+            if fat is not None:
+                parsed["fat_g"] = fat
+            continue
         if any(token in key_norm for token in ("fiber", "fibre", "blonnik")):
             fiber = _extract_gram_value(value_text)
             if fiber is not None:
@@ -1099,6 +1231,12 @@ def extract_nutrition_per_100g_from_page(scraper: Any, html_content: str) -> dic
         if value is not None:
             parsed["protein_g"] = value
 
+    fat_match = re.search(r"(?:tluszcz\w*|fat)[^0-9]{0,30}(\d+(?:[.,]\d+)?)\s*g\b", section)
+    if fat_match:
+        value = _coerce_nutrition_number(fat_match.group(1))
+        if value is not None:
+            parsed["fat_g"] = value
+
     fiber_match = re.search(r"(?:blonnik|fiber|fibre)[^0-9]{0,30}(\d+(?:[.,]\d+)?)\s*g\b", section)
     if fiber_match:
         value = _coerce_nutrition_number(fiber_match.group(1))
@@ -1113,7 +1251,7 @@ def convert_nutrition_per_100g_to_portion(per_100g: dict, portion_weight_g: Opti
         return {}
     ratio = portion_weight_g / 100.0
     converted: dict = {}
-    for key in ("calories_kcal", "protein_g", "carbs_g", "fiber_g"):
+    for key in ("calories_kcal", "protein_g", "carbs_g", "fat_g", "fiber_g"):
         value = _coerce_nutrition_number(per_100g.get(key))
         if value is None:
             continue
@@ -1122,7 +1260,12 @@ def convert_nutrition_per_100g_to_portion(per_100g: dict, portion_weight_g: Opti
 
 
 def estimate_nutrition_with_ai(
-    ingredients: List[str], instructions: List[str], base_portions: int
+    *,
+    title: str,
+    ingredients: List[str],
+    instructions: List[str],
+    base_portions: int,
+    portion_weight_g: Optional[float],
 ) -> Optional[dict]:
     if client is None:
         return None
@@ -1132,9 +1275,12 @@ def estimate_nutrition_with_ai(
     portions = max(1, int(base_portions or 1))
     prompt = "\n".join(
         [
-            "Zwroc wylacznie JSON.",
-            "Oblicz SZACUNKOWE wartosci odzywcze NA 1 PORCJE przepisu.",
+            "Zwróć WYŁĄCZNIE poprawny JSON.",
+            "Jesteś dietetykiem klinicznym i analitykiem procesów kulinarnych.",
+            "Oblicz SZACUNKOWE wartości odżywcze NA 1 PORCJĘ.",
+            f"title: {title or ''}",
             f"portions: {portions}",
+            f"portion_weight_g: {portion_weight_g if portion_weight_g else 'null'}",
             f"ingredients: {json.dumps(ingredients, ensure_ascii=False)}",
             f"instructions: {json.dumps(instructions, ensure_ascii=False)}",
             "",
@@ -1142,15 +1288,17 @@ def estimate_nutrition_with_ai(
             "{",
             '  "protein_g": number,',
             '  "carbs_g": number,',
+            '  "fat_g": number,',
             '  "fiber_g": number,',
             '  "glycemic_load": number,',
             '  "calories_kcal": number',
             "}",
             "",
-            "Zasady:",
-            "- Wszystkie wartosci >= 0",
+            "Zasady analityczne:",
+            "- Uwzględnij proces: redukcja/odparowanie, hydratacja, smażenie",
+            "- Wszystkie wartości >= 0",
             "- liczby, nie stringi",
-            "- zaokraglij do 1 miejsca po przecinku",
+            "- zaokrąglij do 1 miejsca po przecinku",
         ]
     )
 
@@ -1173,11 +1321,116 @@ def estimate_nutrition_with_ai(
         return None
 
 
+def _estimate_glycemic_index(title: str, ingredients: List[str], instructions: List[str]) -> float:
+    blob = _normalize_text(" ".join([title, " ".join(ingredients), " ".join(instructions)]))
+    high_tokens = ("cukier", "maka pszenna", "maka", "bialy ryz", "syrop", "slodycz", "slodk")
+    medium_tokens = ("pelnoziarn", "makaron", "sok", "kasz")
+    low_tokens = ("straczk", "warzyw", "bialko", "tluszcz", "orzech", "migdal")
+
+    if any(token in blob for token in high_tokens):
+        return 72.0
+    if any(token in blob for token in medium_tokens):
+        return 62.0
+    if any(token in blob for token in low_tokens):
+        return 45.0
+    return 55.0
+
+
+def _estimate_glycemic_load_fallback(
+    *,
+    title: str,
+    ingredients: List[str],
+    instructions: List[str],
+    carbs_g: Optional[float],
+    fiber_g: Optional[float],
+) -> Optional[float]:
+    carbs = _coerce_nutrition_number(carbs_g)
+    if carbs is None:
+        return None
+    fiber = _coerce_nutrition_number(fiber_g) or 0.0
+    net_carbs = max(0.0, carbs - fiber)
+    gi = _estimate_glycemic_index(title, ingredients, instructions)
+    return round((gi * net_carbs) / 100.0, 1)
+
+
+def _contains_low_confidence_terms(ingredients: List[str], instructions: List[str]) -> bool:
+    text_blob = _normalize_text(" ".join(ingredients + instructions))
+    return any(term in text_blob for term in LOW_CONFIDENCE_TERMS)
+
+
+def _apply_nutrition_guardrails(
+    nutrition: Optional[dict], portion_weight_g: Optional[float]
+) -> Optional[dict]:
+    if not nutrition:
+        return None
+
+    protein = _coerce_nutrition_number(nutrition.get("protein_g")) or 0.0
+    carbs = _coerce_nutrition_number(nutrition.get("carbs_g")) or 0.0
+    fat = _coerce_nutrition_number(nutrition.get("fat_g")) or 0.0
+    fiber = _coerce_nutrition_number(nutrition.get("fiber_g")) or 0.0
+    calories = _coerce_nutrition_number(nutrition.get("calories_kcal"))
+    glycemic_load = _coerce_nutrition_number(nutrition.get("glycemic_load"))
+
+    if fiber > carbs:
+        fiber = carbs
+    net_carbs = max(0.0, carbs - fiber)
+    if glycemic_load is not None and net_carbs >= 0 and glycemic_load > net_carbs:
+        glycemic_load = round(net_carbs, 1)
+
+    # Guardrail: sum of macros cannot exceed portion mass by a meaningful margin.
+    if portion_weight_g and portion_weight_g > 0:
+        macro_mass = protein + carbs + fat + fiber
+        if macro_mass > portion_weight_g * 1.05:
+            return None
+
+    # Guardrail: Atwater consistency when calories and fat are available.
+    if calories is not None and fat > 0:
+        atwater = (protein * 4.0) + (carbs * 4.0) + (fat * 9.0)
+        if atwater > 0:
+            rel_diff = abs(calories - atwater) / atwater
+            if rel_diff > 0.55:
+                return None
+
+    return {
+        "protein_g": round(protein, 1),
+        "carbs_g": round(carbs, 1),
+        "fat_g": round(fat, 1),
+        "fiber_g": round(fiber, 1),
+        "glycemic_load": round(glycemic_load, 1) if glycemic_load is not None else None,
+        "calories_kcal": calories,
+    }
+
+
+def _compute_nutrition_confidence_score(
+    *,
+    nutrition_source: Optional[str],
+    ingredients: List[str],
+    instructions: List[str],
+    portion_weight_g: Optional[float],
+) -> Optional[float]:
+    if not nutrition_source:
+        return None
+    base_score = 35.0
+    if nutrition_source == "page_100g":
+        base_score = 100.0
+    elif nutrition_source == "mixed":
+        base_score = 70.0
+    elif nutrition_source == "ai":
+        base_score = 35.0
+
+    if _contains_low_confidence_terms(ingredients, instructions):
+        base_score -= 30.0
+    if not portion_weight_g or portion_weight_g <= 0:
+        base_score -= 10.0
+
+    return round(max(5.0, min(100.0, base_score)), 1)
+
+
 def merge_nutrition_sources(
     page_nutrition_per_portion: dict,
     ai_nutrition_per_portion: Optional[dict],
 ) -> tuple[Optional[dict], Optional[str]]:
-    keys = ("protein_g", "carbs_g", "fiber_g", "glycemic_load", "calories_kcal")
+    keys = ("protein_g", "carbs_g", "fat_g", "fiber_g", "glycemic_load", "calories_kcal")
     merged: dict = {}
     used_page = False
     used_ai = False
@@ -1208,37 +1461,76 @@ def merge_nutrition_sources(
     return merged, source
 
 
-def apply_nutrition_to_recipe(recipe: RecipeDB, nutrition: Optional[dict], nutrition_source: Optional[str]) -> None:
+def apply_nutrition_to_recipe(
+    recipe: RecipeDB,
+    nutrition: Optional[dict],
+    nutrition_source: Optional[str],
+    nutrition_confidence_score: Optional[float],
+) -> None:
     recipe.nutrition_protein_g = _coerce_nutrition_number((nutrition or {}).get("protein_g"))
     recipe.nutrition_carbs_g = _coerce_nutrition_number((nutrition or {}).get("carbs_g"))
+    recipe.nutrition_fat_g = _coerce_nutrition_number((nutrition or {}).get("fat_g"))
     recipe.nutrition_fiber_g = _coerce_nutrition_number((nutrition or {}).get("fiber_g"))
     recipe.nutrition_glycemic_load = _coerce_nutrition_number((nutrition or {}).get("glycemic_load"))
     recipe.nutrition_calories_kcal = _coerce_nutrition_number((nutrition or {}).get("calories_kcal"))
     recipe.nutrition_source = nutrition_source
+    recipe.nutrition_confidence_score = _coerce_nutrition_number(nutrition_confidence_score)
 
 
 def estimate_recipe_nutrition(
+    title: str,
     ingredients: List[str],
     instructions: List[str],
     base_portions: int,
     page_nutrition_per_100g: Optional[dict] = None,
     portion_weight_g: Optional[float] = None,
-) -> tuple[Optional[dict], Optional[str]]:
+) -> tuple[Optional[dict], Optional[str], Optional[float]]:
     page_nutrition_per_portion = convert_nutrition_per_100g_to_portion(
         page_nutrition_per_100g or {}, portion_weight_g
     )
-    required_keys = ("protein_g", "carbs_g", "fiber_g", "glycemic_load", "calories_kcal")
+    required_keys = ("protein_g", "carbs_g", "fat_g", "fiber_g", "glycemic_load", "calories_kcal")
     needs_ai = any(key not in page_nutrition_per_portion for key in required_keys)
 
     ai_nutrition = None
     if needs_ai:
         ai_nutrition = estimate_nutrition_with_ai(
+            title=title,
             ingredients=ingredients,
             instructions=instructions,
             base_portions=base_portions,
+            portion_weight_g=portion_weight_g,
         )
 
-    return merge_nutrition_sources(page_nutrition_per_portion, ai_nutrition)
+    merged_nutrition, nutrition_source = merge_nutrition_sources(page_nutrition_per_portion, ai_nutrition)
+    if not merged_nutrition:
+        return None, None, None
+
+    if _coerce_nutrition_number(merged_nutrition.get("glycemic_load")) is None:
+        fallback_gl = _estimate_glycemic_load_fallback(
+            title=title,
+            ingredients=ingredients,
+            instructions=instructions,
+            carbs_g=merged_nutrition.get("carbs_g"),
+            fiber_g=merged_nutrition.get("fiber_g"),
+        )
+        if fallback_gl is not None:
+            merged_nutrition["glycemic_load"] = fallback_gl
+            if nutrition_source == "page_100g":
+                nutrition_source = "mixed"
+            elif nutrition_source is None:
+                nutrition_source = "mixed"
+
+    guarded_nutrition = _apply_nutrition_guardrails(merged_nutrition, portion_weight_g)
+    if not guarded_nutrition:
+        return None, None, None
+
+    confidence_score = _compute_nutrition_confidence_score(
+        nutrition_source=nutrition_source,
+        ingredients=ingredients,
+        instructions=instructions,
+        portion_weight_g=portion_weight_g,
+    )
+    return guarded_nutrition, nutrition_source, confidence_score
 
 
 def fetch_html_safely(url: str, timeout: int = 10) -> str:
@@ -1855,7 +2147,8 @@ async def parse_and_save_recipe(
             scraper=scraper,
             html_content=html_content,
         )
-        nutrition_estimate, nutrition_source = estimate_recipe_nutrition(
+        nutrition_estimate, nutrition_source, nutrition_confidence_score = estimate_recipe_nutrition(
+            title=title,
             ingredients=ingredients,
             instructions=instructions_list,
             base_portions=base_portions,
@@ -1884,7 +2177,12 @@ async def parse_and_save_recipe(
             recipe.piece_weight_g = yield_context.piece_weight_g
             recipe.pan_diameter_min_cm = yield_context.pan_diameter_min_cm
             recipe.pan_diameter_max_cm = yield_context.pan_diameter_max_cm
-            apply_nutrition_to_recipe(recipe, nutrition_estimate, nutrition_source)
+            apply_nutrition_to_recipe(
+                recipe,
+                nutrition_estimate,
+                nutrition_source,
+                nutrition_confidence_score,
+            )
             recipe.image_url = image_url
             recipe.updated_at = datetime.datetime.utcnow()
         else:
@@ -1907,10 +2205,12 @@ async def parse_and_save_recipe(
                 pan_diameter_max_cm=yield_context.pan_diameter_max_cm,
                 nutrition_protein_g=_coerce_nutrition_number((nutrition_estimate or {}).get("protein_g")),
                 nutrition_carbs_g=_coerce_nutrition_number((nutrition_estimate or {}).get("carbs_g")),
+                nutrition_fat_g=_coerce_nutrition_number((nutrition_estimate or {}).get("fat_g")),
                 nutrition_fiber_g=_coerce_nutrition_number((nutrition_estimate or {}).get("fiber_g")),
                 nutrition_glycemic_load=_coerce_nutrition_number((nutrition_estimate or {}).get("glycemic_load")),
                 nutrition_calories_kcal=_coerce_nutrition_number((nutrition_estimate or {}).get("calories_kcal")),
                 nutrition_source=nutrition_source,
+                nutrition_confidence_score=nutrition_confidence_score,
             )
             db.add(recipe)
 
@@ -2384,7 +2684,8 @@ ZWROT (tylko JSON):
         )
         base_portions = max(1, int(yield_context.base_portions or 1))
         servings_unit = yield_context.servings_unit
-        nutrition_estimate, nutrition_source = estimate_recipe_nutrition(
+        nutrition_estimate, nutrition_source, nutrition_confidence_score = estimate_recipe_nutrition(
+            title=parsed_title,
             ingredients=parsed_ingredients,
             instructions=instructions_list,
             base_portions=base_portions,
@@ -2415,10 +2716,12 @@ ZWROT (tylko JSON):
             pan_diameter_max_cm=yield_context.pan_diameter_max_cm,
             nutrition_protein_g=_coerce_nutrition_number((nutrition_estimate or {}).get("protein_g")),
             nutrition_carbs_g=_coerce_nutrition_number((nutrition_estimate or {}).get("carbs_g")),
+            nutrition_fat_g=_coerce_nutrition_number((nutrition_estimate or {}).get("fat_g")),
             nutrition_fiber_g=_coerce_nutrition_number((nutrition_estimate or {}).get("fiber_g")),
             nutrition_glycemic_load=_coerce_nutrition_number((nutrition_estimate or {}).get("glycemic_load")),
             nutrition_calories_kcal=_coerce_nutrition_number((nutrition_estimate or {}).get("calories_kcal")),
             nutrition_source=nutrition_source,
+            nutrition_confidence_score=nutrition_confidence_score,
         )
 
         db.add(recipe)
@@ -2630,7 +2933,8 @@ async def create_recipe(
         instructions=instructions_list,
     )
 
-    nutrition_estimate, nutrition_source = estimate_recipe_nutrition(
+    nutrition_estimate, nutrition_source, nutrition_confidence_score = estimate_recipe_nutrition(
+        title=title,
         ingredients=ingredients,
         instructions=instructions_list,
         base_portions=base_portions,
@@ -2656,10 +2960,12 @@ async def create_recipe(
         pan_diameter_max_cm=yield_context.pan_diameter_max_cm,
         nutrition_protein_g=_coerce_nutrition_number((nutrition_estimate or {}).get("protein_g")),
         nutrition_carbs_g=_coerce_nutrition_number((nutrition_estimate or {}).get("carbs_g")),
+        nutrition_fat_g=_coerce_nutrition_number((nutrition_estimate or {}).get("fat_g")),
         nutrition_fiber_g=_coerce_nutrition_number((nutrition_estimate or {}).get("fiber_g")),
         nutrition_glycemic_load=_coerce_nutrition_number((nutrition_estimate or {}).get("glycemic_load")),
         nutrition_calories_kcal=_coerce_nutrition_number((nutrition_estimate or {}).get("calories_kcal")),
         nutrition_source=nutrition_source,
+        nutrition_confidence_score=nutrition_confidence_score,
     )
 
     db.add(recipe)

@@ -84,10 +84,12 @@ export interface Recipe {
   pan_diameter_max_cm?: number | null
   nutrition_protein_g?: number | null
   nutrition_carbs_g?: number | null
+  nutrition_fat_g?: number | null
   nutrition_fiber_g?: number | null
   nutrition_glycemic_load?: number | null
   nutrition_calories_kcal?: number | null
   nutrition_source?: 'page_100g' | 'ai' | 'mixed' | null
+  nutrition_confidence_score?: number | null
   category?: RecipeCategory
   rating?: number
   created_at?: string
