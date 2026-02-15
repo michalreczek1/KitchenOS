@@ -1,6 +1,6 @@
 """add generalized yield context fields
 
-Revision ID: 0007_recipe_yield_context_general
+Revision ID: 0007_yield_context_general
 Revises: 0006_recipe_nutrition_calories
 Create Date: 2026-02-15 21:20:00.000000
 """
@@ -8,7 +8,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0007_recipe_yield_context_general"
+revision = "0007_yield_context_general"
 down_revision = "0006_recipe_nutrition_calories"
 branch_labels = None
 depends_on = None
