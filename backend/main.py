@@ -3,13 +3,14 @@ import re
 import requests
 import datetime
 import json
+import statistics
 import uuid
 import secrets
 from urllib.parse import urlparse, urlencode
 from fastapi import FastAPI, HTTPException, Depends, status, Body
 from fastapi.security import OAuth2PasswordBearer
 from pydantic import BaseModel, HttpUrl, Field, EmailStr, ValidationError
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Literal
 from recipe_scrapers import scrape_html
 from groq import Groq
 from jose import jwt, JWTError
@@ -361,6 +362,7 @@ class RecipeCreateRequest(BaseModel):
     prep_time: Optional[str] = None
     difficulty: Optional[str] = None
     base_portions: Optional[int] = 1
+    servings_unit: Optional[Literal["servings", "people"]] = "servings"
 
 
 class ChangePasswordRequest(BaseModel):
@@ -439,6 +441,11 @@ class RecipeResponse(BaseModel):
     url: str
     image_url: Optional[str] = None
     base_portions: int
+    servings_unit: Optional[str] = None
+    nutrition_protein_g: Optional[float] = None
+    nutrition_carbs_g: Optional[float] = None
+    nutrition_fiber_g: Optional[float] = None
+    nutrition_glycemic_load: Optional[float] = None
     created_at: datetime.datetime
     ingredients: List[str] = []
     instructions: Optional[str] = None
@@ -548,6 +555,124 @@ def extract_portion_count(yield_text: str) -> int:
         return count
 
     return 1
+
+
+def detect_servings_unit(text: Optional[str]) -> str:
+    if not text:
+        return "servings"
+    lowered = text.lower()
+    if re.search(r"\b(os.b|osob|osoby|osoba|person|people)\b", lowered, re.IGNORECASE):
+        return "people"
+    if re.search(r"\b(porcj\w*|servings?)\b", lowered, re.IGNORECASE):
+        return "servings"
+    return "servings"
+
+
+def normalize_servings_unit(value: Optional[str]) -> str:
+    if value == "people":
+        return "people"
+    return "servings"
+
+
+def _coerce_nutrition_number(value: Any) -> Optional[float]:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        result = float(value)
+    elif isinstance(value, str):
+        normalized = value.strip().replace(",", ".")
+        if not normalized:
+            return None
+        try:
+            result = float(normalized)
+        except ValueError:
+            return None
+    else:
+        return None
+
+    if result < 0:
+        return None
+    return round(result, 1)
+
+
+def _parse_nutrition_payload(payload: dict) -> Optional[dict]:
+    keys = ("protein_g", "carbs_g", "fiber_g", "glycemic_load")
+    parsed = {}
+    for key in keys:
+        value = _coerce_nutrition_number(payload.get(key))
+        if value is None:
+            return None
+        parsed[key] = value
+    return parsed
+
+
+def estimate_nutrition_with_ai(
+    ingredients: List[str], instructions: List[str], base_portions: int
+) -> Optional[dict]:
+    if client is None:
+        return None
+    if not ingredients:
+        return None
+
+    portions = max(1, int(base_portions or 1))
+    prompt = "\n".join(
+        [
+            "Zwroc wylacznie JSON.",
+            "Oblicz SZACUNKOWE wartosci odzywcze NA 1 PORCJE przepisu.",
+            f"portions: {portions}",
+            f"ingredients: {json.dumps(ingredients, ensure_ascii=False)}",
+            f"instructions: {json.dumps(instructions, ensure_ascii=False)}",
+            "",
+            "Wymagany format:",
+            "{",
+            '  "protein_g": number,',
+            '  "carbs_g": number,',
+            '  "fiber_g": number,',
+            '  "glycemic_load": number',
+            "}",
+            "",
+            "Zasady:",
+            "- Wszystkie wartosci >= 0",
+            "- liczby, nie stringi",
+            "- zaokraglij do 1 miejsca po przecinku",
+        ]
+    )
+
+    sample_map = {
+        "protein_g": [],
+        "carbs_g": [],
+        "fiber_g": [],
+        "glycemic_load": [],
+    }
+
+    for attempt in range(1, 4):
+        try:
+            completion = client.chat.completions.create(
+                messages=[{"role": "user", "content": prompt}],
+                model="llama-3.3-70b-versatile",
+                temperature=0,
+                response_format={"type": "json_object"},
+            )
+            raw = completion.choices[0].message.content or "{}"
+            parsed_raw = json.loads(raw)
+            parsed = _parse_nutrition_payload(parsed_raw)
+            if not parsed:
+                logger.warning("Nutrition attempt %s invalid payload", attempt)
+                continue
+            for key, value in parsed.items():
+                sample_map[key].append(value)
+        except Exception as exc:
+            logger.warning("Nutrition attempt %s failed: %s", attempt, str(exc))
+
+    if not all(sample_map[key] for key in sample_map):
+        return None
+
+    return {
+        "protein_g": round(statistics.median(sample_map["protein_g"]), 1),
+        "carbs_g": round(statistics.median(sample_map["carbs_g"]), 1),
+        "fiber_g": round(statistics.median(sample_map["fiber_g"]), 1),
+        "glycemic_load": round(statistics.median(sample_map["glycemic_load"]), 1),
+    }
 
 
 def fetch_html_safely(url: str, timeout: int = 10) -> str:
@@ -1141,13 +1266,21 @@ async def parse_and_save_recipe(
                 detail="Nie moÅ¼na wyciÄgnÄÄ skÅadnikÃ³w z tej strony",
             )
 
+        yields_text = scraper.yields()
         try:
-            base_portions = extract_portion_count(scraper.yields())
+            base_portions = extract_portion_count(yields_text)
         except Exception:
             base_portions = 1
-            logger.warning("Nie udaÅo siÄ odczytaÄ porcji z przepisu, ustawiam 1")
+            logger.warning("Nie udalo sie odczytac porcji z przepisu, ustawiam 1")
+        servings_unit = detect_servings_unit(yields_text)
         image_url = scraper.image()
         instructions = scraper.instructions()
+        instructions_list = _normalize_instruction_list(instructions)
+        nutrition_estimate = estimate_nutrition_with_ai(
+            ingredients=ingredients,
+            instructions=instructions_list,
+            base_portions=base_portions,
+        )
 
         # SprawdÅº czy przepis juÅ¼ istnieje
         recipe = (
@@ -1163,6 +1296,12 @@ async def parse_and_save_recipe(
             recipe.ingredients = ingredients
             recipe.instructions = instructions
             recipe.base_portions = base_portions
+            recipe.servings_unit = servings_unit
+            if nutrition_estimate:
+                recipe.nutrition_protein_g = nutrition_estimate["protein_g"]
+                recipe.nutrition_carbs_g = nutrition_estimate["carbs_g"]
+                recipe.nutrition_fiber_g = nutrition_estimate["fiber_g"]
+                recipe.nutrition_glycemic_load = nutrition_estimate["glycemic_load"]
             recipe.image_url = image_url
             recipe.updated_at = datetime.datetime.utcnow()
         else:
@@ -1176,6 +1315,11 @@ async def parse_and_save_recipe(
                 ingredients=ingredients,
                 instructions=instructions,
                 base_portions=base_portions,
+                servings_unit=servings_unit,
+                nutrition_protein_g=nutrition_estimate["protein_g"] if nutrition_estimate else None,
+                nutrition_carbs_g=nutrition_estimate["carbs_g"] if nutrition_estimate else None,
+                nutrition_fiber_g=nutrition_estimate["fiber_g"] if nutrition_estimate else None,
+                nutrition_glycemic_load=nutrition_estimate["glycemic_load"] if nutrition_estimate else None,
             )
             db.add(recipe)
 
@@ -1619,6 +1763,25 @@ ZWROT (tylko JSON):
         )
 
         parsed_data = json.loads(chat_completion.choices[0].message.content or "{}")
+        raw_ingredients = parsed_data.get("ingredients") or []
+        if isinstance(raw_ingredients, list):
+            parsed_ingredients = [str(item).strip() for item in raw_ingredients if str(item).strip()]
+        else:
+            parsed_ingredients = []
+
+        instructions_list = _normalize_instruction_list(parsed_data.get("instructions"))
+        instructions_text = "\n".join(instructions_list).strip()
+        try:
+            base_portions = int(parsed_data.get("portions") or 1)
+        except (TypeError, ValueError):
+            base_portions = 1
+        base_portions = max(1, base_portions)
+        servings_unit = detect_servings_unit(content)
+        nutrition_estimate = estimate_nutrition_with_ai(
+            ingredients=parsed_ingredients,
+            instructions=instructions_list,
+            base_portions=base_portions,
+        )
 
         # Ikona domyÅlna
         generic_icon = "https://cdn-icons-png.flaticon.com/512/3081/3081557.png"
@@ -1631,9 +1794,14 @@ ZWROT (tylko JSON):
             title=(parsed_data.get("title") or "Przepis WÅasny").strip(),
             url=custom_url,
             image_url=generic_icon,
-            ingredients=parsed_data.get("ingredients") or [],
-            instructions=parsed_data.get("instructions") or "",
-            base_portions=int(parsed_data.get("portions") or 1),
+            ingredients=parsed_ingredients,
+            instructions=instructions_text,
+            base_portions=base_portions,
+            servings_unit=servings_unit,
+            nutrition_protein_g=nutrition_estimate["protein_g"] if nutrition_estimate else None,
+            nutrition_carbs_g=nutrition_estimate["carbs_g"] if nutrition_estimate else None,
+            nutrition_fiber_g=nutrition_estimate["fiber_g"] if nutrition_estimate else None,
+            nutrition_glycemic_load=nutrition_estimate["glycemic_load"] if nutrition_estimate else None,
         )
 
         db.add(recipe)
@@ -1828,7 +1996,15 @@ async def create_recipe(
     instructions_list = _normalize_instruction_list(payload.instructions)
     instructions_text = "\n".join(instructions_list).strip()
     if not instructions_text:
-        raise HTTPException(status_code=400, detail="Instrukcje nie mogÃâ¦ byÃâ¡ puste")
+        raise HTTPException(status_code=400, detail="Instrukcje nie moga byc puste")
+
+    base_portions = max(1, int(payload.base_portions or 1))
+    servings_unit = normalize_servings_unit(payload.servings_unit)
+    nutrition_estimate = estimate_nutrition_with_ai(
+        ingredients=ingredients,
+        instructions=instructions_list,
+        base_portions=base_portions,
+    )
 
     generic_icon = "https://cdn-icons-png.flaticon.com/512/3081/3081557.png"
     recipe = RecipeDB(
@@ -1838,7 +2014,12 @@ async def create_recipe(
         image_url=generic_icon,
         ingredients=ingredients,
         instructions=instructions_text,
-        base_portions=int(payload.base_portions or 1),
+        base_portions=base_portions,
+        servings_unit=servings_unit,
+        nutrition_protein_g=nutrition_estimate["protein_g"] if nutrition_estimate else None,
+        nutrition_carbs_g=nutrition_estimate["carbs_g"] if nutrition_estimate else None,
+        nutrition_fiber_g=nutrition_estimate["fiber_g"] if nutrition_estimate else None,
+        nutrition_glycemic_load=nutrition_estimate["glycemic_load"] if nutrition_estimate else None,
     )
 
     db.add(recipe)

@@ -17,6 +17,21 @@ const normalizeToList = (value: string[] | string | null | undefined) => {
   return value.split(/\r?\n+/).map((entry) => entry.trim()).filter(Boolean)
 }
 
+const formatPortionsLabel = (count: number, unit: 'servings' | 'people') => {
+  if (unit === 'people') {
+    if (count === 1) return `${count} osoby`
+    return `${count} osob`
+  }
+  if (count === 1) return `${count} porcja`
+  if (count < 5) return `${count} porcje`
+  return `${count} porcji`
+}
+
+const formatNutritionValue = (value?: number | null, suffix = 'g') => {
+  if (typeof value !== 'number' || Number.isNaN(value)) return null
+  return suffix ? `${value.toFixed(1)} ${suffix}` : value.toFixed(1)
+}
+
 export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
   const [recipe, setRecipe] = useState<RecipeDetails | null>(null)
   const [isLoading, setIsLoading] = useState(false)
@@ -32,6 +47,13 @@ export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
 
   const normalizedIngredients = normalizeToList(recipe?.ingredients)
   const normalizedInstructions = normalizeToList(recipe?.instructions)
+  const basePortions = Math.max(1, recipe?.servings ?? recipe?.base_portions ?? 1)
+  const servingsUnit = recipe?.servings_unit === 'people' ? 'people' : 'servings'
+  const proteinLabel = formatNutritionValue(recipe?.nutrition_protein_g)
+  const carbsLabel = formatNutritionValue(recipe?.nutrition_carbs_g)
+  const fiberLabel = formatNutritionValue(recipe?.nutrition_fiber_g)
+  const glycemicLoadLabel = formatNutritionValue(recipe?.nutrition_glycemic_load, '')
+  const hasNutrition = !!(proteinLabel && carbsLabel && fiberLabel && glycemicLoadLabel)
 
   useEffect(() => {
     if (!recipeId) {
@@ -145,10 +167,10 @@ export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
                       <span>Gotowanie: {recipe.cook_time}</span>
                     </div>
                   )}
-                  {recipe.servings && (
+                  {basePortions && (
                     <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
                       <Users className="h-4 w-4 icon-sky" />
-                      <span>{recipe.servings} porcji</span>
+                      <span>{formatPortionsLabel(basePortions, servingsUnit)}</span>
                     </div>
                   )}
                 </div>
@@ -166,6 +188,27 @@ export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
                       </li>
                     ))}
                   </ul>
+                  <div className="mt-4 rounded-xl border border-border bg-muted/30 p-3 text-sm">
+                    {servingsUnit === 'people' ? (
+                      <p className="text-muted-foreground">
+                        W przepisie zaplanowano porcje dla {formatPortionsLabel(basePortions, servingsUnit)}.
+                      </p>
+                    ) : (
+                      <p className="text-muted-foreground">
+                        W przepisie zaplanowano {formatPortionsLabel(basePortions, servingsUnit)}.
+                      </p>
+                    )}
+                    {hasNutrition ? (
+                      <div className="mt-2 space-y-1 text-muted-foreground">
+                        <p>Wartosc odzywcza bialko: {proteinLabel}</p>
+                        <p>Wartosc odzywcza weglowodany: {carbsLabel}</p>
+                        <p>Wartosc odzywcza blonnik: {fiberLabel}</p>
+                        <p>Wartosc odzywcza ladunek glikemiczny: {glycemicLoadLabel}</p>
+                      </div>
+                    ) : (
+                      <p className="mt-2 text-muted-foreground">Wartosci odzywcze niedostepne dla tego przepisu.</p>
+                    )}
+                  </div>
                 </div>
               )}
 

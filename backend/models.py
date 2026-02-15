@@ -2,6 +2,7 @@ import datetime
 from sqlalchemy import (
     Column,
     Integer,
+    Float,
     String,
     Text,
     JSON,
@@ -43,6 +44,11 @@ class RecipeDB(Base):
         DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow
     )
     base_portions = Column(Integer, default=1, nullable=False)
+    servings_unit = Column(String, nullable=False, default="servings")
+    nutrition_protein_g = Column(Float, nullable=True)
+    nutrition_carbs_g = Column(Float, nullable=True)
+    nutrition_fiber_g = Column(Float, nullable=True)
+    nutrition_glycemic_load = Column(Float, nullable=True)
 
 
 class RecipeRatingDB(Base):

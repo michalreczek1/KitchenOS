@@ -57,6 +57,7 @@ const apiFetch = async (path: string, options: RequestInit = {}) => {
 }
 
 export type RecipeCategory = 'obiady' | 'sniadania' | 'lunchbox' | 'salatki' | 'pieczywo' | 'desery' | 'inne'
+export type ServingsUnit = 'servings' | 'people'
 
 export const RECIPE_CATEGORIES: { value: RecipeCategory; label: string }[] = [
   { value: 'obiady', label: 'Obiady' },
@@ -73,6 +74,12 @@ export interface Recipe {
   title: string
   image_url: string
   source_url: string
+  base_portions?: number
+  servings_unit?: ServingsUnit
+  nutrition_protein_g?: number | null
+  nutrition_carbs_g?: number | null
+  nutrition_fiber_g?: number | null
+  nutrition_glycemic_load?: number | null
   category?: RecipeCategory
   rating?: number
   created_at?: string

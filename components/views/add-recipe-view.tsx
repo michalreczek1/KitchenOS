@@ -12,6 +12,7 @@ interface AddRecipeViewProps {
 }
 
 type AddMode = 'url' | 'manual'
+type ServingsUnit = 'servings' | 'people'
 
 export function AddRecipeView({ onRecipeAdded }: AddRecipeViewProps) {
   const [mode, setMode] = useState<AddMode>('url')
@@ -26,6 +27,7 @@ export function AddRecipeView({ onRecipeAdded }: AddRecipeViewProps) {
   const [instructions, setInstructions] = useState('')
   const [category, setCategory] = useState<RecipeCategory>('obiady')
   const [servings, setServings] = useState(4)
+  const [servingsUnit, setServingsUnit] = useState<ServingsUnit>('servings')
   const [urlCategory, setUrlCategory] = useState<RecipeCategory>('obiady')
 
   const handleUrlSubmit = async (e: React.FormEvent) => {
@@ -65,9 +67,10 @@ export function AddRecipeView({ onRecipeAdded }: AddRecipeViewProps) {
     try {
       const trimmedIngredients = ingredients.map((item) => item.trim()).filter(Boolean)
       const categoryLabel = RECIPE_CATEGORIES.find((item) => item.value === category)?.label ?? category
+      const portionsLine = servingsUnit === 'people' ? `Dla osob: ${servings}` : `Porcje: ${servings}`
       const contentParts = [
         title.trim(),
-        `Porcje: ${servings}`,
+        portionsLine,
         `Kategoria: ${categoryLabel}`,
         'Skladniki:',
         ...trimmedIngredients.map((item) => `- ${item}`),
@@ -87,6 +90,7 @@ export function AddRecipeView({ onRecipeAdded }: AddRecipeViewProps) {
       setInstructions('')
       setCategory('obiady')
       setServings(4)
+      setServingsUnit('servings')
     } catch {
       showToast('Nie udalo sie dodac przepisu', 'error')
     } finally {
@@ -289,14 +293,40 @@ export function AddRecipeView({ onRecipeAdded }: AddRecipeViewProps) {
           {/* Servings */}
           <div className="space-y-2">
             <label className="text-sm font-medium text-foreground">Liczba porcji</label>
-            <input
-              type="number"
-              min={1}
-              max={20}
-              value={servings}
-              onChange={(e) => setServings(Number(e.target.value))}
-              className="w-24 rounded-xl border border-border bg-card px-4 py-3 text-foreground transition-all focus:border-primary/50 focus:outline-none focus:ring-2 focus:ring-primary/20"
-            />
+            <div className="flex flex-wrap items-center gap-3">
+              <input
+                type="number"
+                min={1}
+                max={20}
+                value={servings}
+                onChange={(e) => setServings(Number(e.target.value))}
+                className="w-24 rounded-xl border border-border bg-card px-4 py-3 text-foreground transition-all focus:border-primary/50 focus:outline-none focus:ring-2 focus:ring-primary/20"
+              />
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setServingsUnit('servings')}
+                  className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
+                    servingsUnit === 'servings'
+                      ? 'border-primary bg-primary/10 text-primary'
+                      : 'border-border bg-card text-muted-foreground hover:bg-muted'
+                  }`}
+                >
+                  Porcje
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setServingsUnit('people')}
+                  className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${
+                    servingsUnit === 'people'
+                      ? 'border-primary bg-primary/10 text-primary'
+                      : 'border-border bg-card text-muted-foreground hover:bg-muted'
+                  }`}
+                >
+                  Osoby
+                </button>
+              </div>
+            </div>
           </div>
 
           {/* Ingredients */}
