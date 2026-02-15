@@ -1,4 +1,4 @@
-﻿'use client'
+'use client'
 
 import { useMemo, useState } from 'react'
 import { Sparkles, Clock, ChefHat, BookmarkPlus, RefreshCcw } from 'lucide-react'

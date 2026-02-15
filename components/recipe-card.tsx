@@ -130,7 +130,7 @@ export function RecipeCard({
               onOpenPreview(recipe.id)
             }}
             className="flex h-9 w-9 items-center justify-center rounded-xl border border-border bg-card shadow-sm text-muted-foreground transition-all hover:scale-105 hover:border-primary/40 hover:text-primary"
-            title="PodglÄ…d przepisu"
+            title="Podgląd przepisu"
           >
             <Eye className="h-4 w-4" />
           </button>
