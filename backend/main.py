@@ -2240,8 +2240,16 @@ async def parse_and_save_recipe(
             )
 
         image_url = scraper.image()
-        instructions = scraper.instructions()
-        instructions_list = _normalize_instruction_list(instructions)
+        instructions_raw = scraper.instructions()
+        instructions_list = _normalize_instruction_list(instructions_raw)
+        instructions_text = "\n".join(instructions_list).strip()
+        if not instructions_text:
+            if isinstance(instructions_raw, str):
+                instructions_text = instructions_raw.strip()
+            elif isinstance(instructions_raw, list):
+                instructions_text = "\n".join(
+                    str(item).strip() for item in instructions_raw if str(item).strip()
+                )
         yields_text = extract_yield_text_from_page(scraper=scraper, html_content=html_content)
         yield_context = parse_yield_context(
             yield_text=yields_text,
@@ -2299,7 +2307,7 @@ async def parse_and_save_recipe(
             # Aktualizuj istniejący przepis
             recipe.title = title
             recipe.ingredients = ingredients
-            recipe.instructions = instructions
+            recipe.instructions = instructions_text
             recipe.base_portions = base_portions
             recipe.servings_unit = servings_unit
             recipe.yield_display_label = yield_context.yield_display_label
@@ -2326,7 +2334,7 @@ async def parse_and_save_recipe(
                 url=url_str,
                 image_url=image_url,
                 ingredients=ingredients,
-                instructions=instructions,
+                instructions=instructions_text,
                 base_portions=base_portions,
                 servings_unit=servings_unit,
                 yield_display_label=yield_context.yield_display_label,
@@ -2904,11 +2912,78 @@ def _normalize_inspire_ingredients(raw: Any) -> List[str]:
     return ingredients
 
 
+def _looks_like_instruction_noise(norm_line: str) -> bool:
+    patterns = (
+        r"^(czas przygotowania|czas pieczenia|czas gotowania|czas smazenia)\b",
+        r"^(liczba porcji|porcje|dla osob)\b",
+        r"^(w\s*100\s*g|wartosc energetyczna|wartosc odzywcza)\b",
+        r"^(weglowodany|bialko|tluszcz\w*|blonnik|dieta)\b",
+        r"^-?\s*w tym cukry\b",
+    )
+    return any(re.search(pattern, norm_line) for pattern in patterns)
+
+
+def _normalize_instruction_entries(entries: List[str]) -> List[str]:
+    prepared: List[str] = []
+    for item in entries:
+        text = re.sub(r"\s+", " ", str(item or "")).strip()
+        if not text:
+            continue
+        text = re.sub(r"^(?:krok\s*\d+[:.)-]*\s*|\d+[.)-]\s*|[-*•]\s*)", "", text, flags=re.IGNORECASE).strip()
+        text = text.strip(" -:;")
+        if not text:
+            continue
+        if _looks_like_instruction_noise(_normalize_text(text)):
+            continue
+        prepared.append(text)
+
+    if not prepared:
+        return []
+
+    merged: List[str] = []
+    for line in prepared:
+        if not merged:
+            merged.append(line)
+            continue
+
+        prev = merged[-1]
+        prev_words = len(prev.split())
+        line_words = len(line.split())
+        prev_ends_sentence = bool(re.search(r"[.!?]$", prev))
+        line_starts_sentence = bool(re.match(r"^[A-ZĄĆĘŁŃÓŚŹŻ]", line))
+
+        should_merge = (
+            line_words <= 4
+            or len(line) < 24
+            or prev_words <= 2
+            or len(prev) < 18
+        ) and not (prev_ends_sentence and line_starts_sentence)
+
+        if should_merge:
+            merged[-1] = re.sub(r"\s+", " ", f"{prev} {line}").strip()
+        else:
+            merged.append(line)
+
+    # Remove consecutive duplicates that may appear after merging.
+    deduped: List[str] = []
+    for line in merged:
+        if not deduped or _normalize_text(deduped[-1]) != _normalize_text(line):
+            deduped.append(line)
+    return deduped
+
+
 def _normalize_instruction_list(raw: Any) -> List[str]:
+    entries: List[str] = []
     if isinstance(raw, list):
-        return [str(item).strip() for item in raw if str(item).strip()]
+        for item in raw:
+            text = str(item or "").strip()
+            if not text:
+                continue
+            entries.extend([line.strip() for line in re.split(r"[\r\n]+", text) if line.strip()])
+        return _normalize_instruction_entries(entries)
     if isinstance(raw, str):
-        return [line.strip() for line in re.split(r"[\\r\\n]+", raw) if line.strip()]
+        entries = [line.strip() for line in re.split(r"[\r\n]+", raw) if line.strip()]
+        return _normalize_instruction_entries(entries)
     return []
 
 

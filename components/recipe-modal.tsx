@@ -17,6 +17,44 @@ const normalizeToList = (value: string[] | string | null | undefined) => {
   return value.split(/\r?\n+/).map((entry) => entry.trim()).filter(Boolean)
 }
 
+const normalizeInstructionSteps = (value: string[] | string | null | undefined) => {
+  const raw = normalizeToList(value)
+  const noisePattern =
+    /^(czas przygotowania|czas pieczenia|czas gotowania|liczba porcji|porcje|dla osob|w\s*100\s*g|wartosc energetyczna|wartosc odzywcza|weglowodany|bialko|tluszcz\w*|blonnik|dieta)\b/i
+
+  const cleaned: string[] = []
+  for (const entry of raw) {
+    let line = entry
+      .replace(/^(?:krok\s*\d+[:.)-]*\s*|\d+[.)-]\s*|[-*•]\s*)/i, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (!line) continue
+    if (noisePattern.test(line)) continue
+
+    if (cleaned.length === 0) {
+      cleaned.push(line)
+      continue
+    }
+
+    const prev = cleaned[cleaned.length - 1]
+    const prevWords = prev.split(/\s+/).length
+    const lineWords = line.split(/\s+/).length
+    const prevEndsSentence = /[.!?]$/.test(prev)
+    const lineStartsSentence = /^[A-ZĄĆĘŁŃÓŚŹŻ]/.test(line)
+    const shouldMerge =
+      (lineWords <= 4 || line.length < 24 || prevWords <= 2 || prev.length < 18) &&
+      !(prevEndsSentence && lineStartsSentence)
+
+    if (shouldMerge) {
+      cleaned[cleaned.length - 1] = `${prev} ${line}`.replace(/\s+/g, ' ').trim()
+    } else {
+      cleaned.push(line)
+    }
+  }
+
+  return cleaned
+}
+
 const getPolishPluralForm = (count: number, singular: string, few: string, many: string) => {
   const absCount = Math.abs(count)
   const mod10 = absCount % 10
@@ -69,7 +107,7 @@ export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
   const shouldShowImage = !!recipe?.image_url && recipe.image_url !== GENERIC_ICON_URL
 
   const normalizedIngredients = normalizeToList(recipe?.ingredients)
-  const normalizedInstructions = normalizeToList(recipe?.instructions)
+  const normalizedInstructions = normalizeInstructionSteps(recipe?.instructions)
   const basePortions = Math.max(1, recipe?.servings ?? recipe?.base_portions ?? 1)
   const servingsUnit = recipe?.servings_unit === 'people' ? 'people' : 'servings'
   const yieldDisplayLabel = recipe?.yield_display_label?.trim() || null
