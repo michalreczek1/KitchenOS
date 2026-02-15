@@ -80,6 +80,7 @@ export interface Recipe {
   nutrition_carbs_g?: number | null
   nutrition_fiber_g?: number | null
   nutrition_glycemic_load?: number | null
+  nutrition_calories_kcal?: number | null
   category?: RecipeCategory
   rating?: number
   created_at?: string

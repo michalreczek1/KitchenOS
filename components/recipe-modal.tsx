@@ -72,7 +72,16 @@ export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
   const carbsLabel = formatNutritionValue(recipe?.nutrition_carbs_g)
   const fiberLabel = formatNutritionValue(recipe?.nutrition_fiber_g)
   const glycemicLoadLabel = formatNutritionValue(recipe?.nutrition_glycemic_load, '')
-  const hasNutrition = !!(proteinLabel && carbsLabel && fiberLabel && glycemicLoadLabel)
+  const caloriesLabel = formatNutritionValue(recipe?.nutrition_calories_kcal, 'kcal')
+  const nutritionRows = [
+    { label: 'Kalorie', value: caloriesLabel },
+    { label: 'Białko', value: proteinLabel },
+    { label: 'Węglowodany', value: carbsLabel },
+    { label: 'Błonnik', value: fiberLabel },
+    { label: 'Ładunek glikemiczny', value: glycemicLoadLabel },
+  ]
+  const hasAnyNutrition = nutritionRows.some((row) => !!row.value)
+  const denseNutritionLayout = normalizedIngredients.length >= 8
 
   useEffect(() => {
     if (!recipeId) {
@@ -207,17 +216,23 @@ export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
                       </li>
                     ))}
                   </ul>
-                  <div className="mt-4 rounded-xl border border-border bg-muted/30 p-3 text-sm">
-                    <p className="text-muted-foreground">{formatRecipePlanSentence(basePortions, servingsUnit)}</p>
+                  <div
+                    className={`mt-4 rounded-xl border border-border bg-muted/30 text-sm ${
+                      denseNutritionLayout ? 'p-3' : 'p-4'
+                    }`}
+                  >
+                    <h4 className="font-semibold text-foreground">Wartości odżywcze</h4>
+                    <p className="mt-2 text-muted-foreground">{formatRecipePlanSentence(basePortions, servingsUnit)}</p>
                     <p className="mt-1 text-muted-foreground">{formatNutritionBasisSentence(servingsUnit)}</p>
-                    <h4 className="mt-3 font-semibold text-foreground">Wartości odżywcze</h4>
-                    {hasNutrition ? (
-                      <div className="mt-2 space-y-1 text-muted-foreground">
-                        <p>Białko: {proteinLabel}</p>
-                        <p>Węglowodany: {carbsLabel}</p>
-                        <p>Błonnik: {fiberLabel}</p>
-                        <p>Ładunek glikemiczny: {glycemicLoadLabel}</p>
-                      </div>
+                    {hasAnyNutrition ? (
+                      <ul className={`mt-3 text-muted-foreground ${denseNutritionLayout ? 'space-y-1.5' : 'space-y-2'}`}>
+                        {nutritionRows.map((row) => (
+                          <li key={row.label} className="flex items-start gap-2">
+                            <span className="mt-1.5 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-primary" />
+                            <span>{row.label}: {row.value ?? 'brak danych'}</span>
+                          </li>
+                        ))}
+                      </ul>
                     ) : (
                       <p className="mt-2 text-muted-foreground">
                         Wartości odżywcze niedostępne dla tego przepisu.

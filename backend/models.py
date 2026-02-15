@@ -49,6 +49,7 @@ class RecipeDB(Base):
     nutrition_carbs_g = Column(Float, nullable=True)
     nutrition_fiber_g = Column(Float, nullable=True)
     nutrition_glycemic_load = Column(Float, nullable=True)
+    nutrition_calories_kcal = Column(Float, nullable=True)
 
 
 class RecipeRatingDB(Base):

@@ -446,6 +446,7 @@ class RecipeResponse(BaseModel):
     nutrition_carbs_g: Optional[float] = None
     nutrition_fiber_g: Optional[float] = None
     nutrition_glycemic_load: Optional[float] = None
+    nutrition_calories_kcal: Optional[float] = None
     created_at: datetime.datetime
     ingredients: List[str] = []
     instructions: Optional[str] = None
@@ -596,7 +597,7 @@ def _coerce_nutrition_number(value: Any) -> Optional[float]:
 
 
 def _parse_nutrition_payload(payload: dict) -> Optional[dict]:
-    keys = ("protein_g", "carbs_g", "fiber_g", "glycemic_load")
+    keys = ("protein_g", "carbs_g", "fiber_g", "glycemic_load", "calories_kcal")
     parsed = {}
     for key in keys:
         value = _coerce_nutrition_number(payload.get(key))
@@ -628,7 +629,8 @@ def estimate_nutrition_with_ai(
             '  "protein_g": number,',
             '  "carbs_g": number,',
             '  "fiber_g": number,',
-            '  "glycemic_load": number',
+            '  "glycemic_load": number,',
+            '  "calories_kcal": number',
             "}",
             "",
             "Zasady:",
@@ -1284,6 +1286,7 @@ async def parse_and_save_recipe(
                 recipe.nutrition_carbs_g = nutrition_estimate["carbs_g"]
                 recipe.nutrition_fiber_g = nutrition_estimate["fiber_g"]
                 recipe.nutrition_glycemic_load = nutrition_estimate["glycemic_load"]
+                recipe.nutrition_calories_kcal = nutrition_estimate["calories_kcal"]
             recipe.image_url = image_url
             recipe.updated_at = datetime.datetime.utcnow()
         else:
@@ -1302,6 +1305,7 @@ async def parse_and_save_recipe(
                 nutrition_carbs_g=nutrition_estimate["carbs_g"] if nutrition_estimate else None,
                 nutrition_fiber_g=nutrition_estimate["fiber_g"] if nutrition_estimate else None,
                 nutrition_glycemic_load=nutrition_estimate["glycemic_load"] if nutrition_estimate else None,
+                nutrition_calories_kcal=nutrition_estimate["calories_kcal"] if nutrition_estimate else None,
             )
             db.add(recipe)
 
@@ -1784,6 +1788,7 @@ ZWROT (tylko JSON):
             nutrition_carbs_g=nutrition_estimate["carbs_g"] if nutrition_estimate else None,
             nutrition_fiber_g=nutrition_estimate["fiber_g"] if nutrition_estimate else None,
             nutrition_glycemic_load=nutrition_estimate["glycemic_load"] if nutrition_estimate else None,
+            nutrition_calories_kcal=nutrition_estimate["calories_kcal"] if nutrition_estimate else None,
         )
 
         db.add(recipe)
@@ -2002,6 +2007,7 @@ async def create_recipe(
         nutrition_carbs_g=nutrition_estimate["carbs_g"] if nutrition_estimate else None,
         nutrition_fiber_g=nutrition_estimate["fiber_g"] if nutrition_estimate else None,
         nutrition_glycemic_load=nutrition_estimate["glycemic_load"] if nutrition_estimate else None,
+        nutrition_calories_kcal=nutrition_estimate["calories_kcal"] if nutrition_estimate else None,
     )
 
     db.add(recipe)
