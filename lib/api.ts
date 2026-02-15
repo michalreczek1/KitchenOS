@@ -76,11 +76,18 @@ export interface Recipe {
   source_url: string
   base_portions?: number
   servings_unit?: ServingsUnit
+  yield_display_label?: string | null
+  total_weight_g?: number | null
+  portion_weight_g?: number | null
+  piece_weight_g?: number | null
+  pan_diameter_min_cm?: number | null
+  pan_diameter_max_cm?: number | null
   nutrition_protein_g?: number | null
   nutrition_carbs_g?: number | null
   nutrition_fiber_g?: number | null
   nutrition_glycemic_load?: number | null
   nutrition_calories_kcal?: number | null
+  nutrition_source?: 'page_100g' | 'ai' | 'mixed' | null
   category?: RecipeCategory
   rating?: number
   created_at?: string

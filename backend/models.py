@@ -45,11 +45,18 @@ class RecipeDB(Base):
     )
     base_portions = Column(Integer, default=1, nullable=False)
     servings_unit = Column(String, nullable=False, default="servings")
+    yield_display_label = Column(String, nullable=True)
+    total_weight_g = Column(Float, nullable=True)
+    portion_weight_g = Column(Float, nullable=True)
+    piece_weight_g = Column(Float, nullable=True)
+    pan_diameter_min_cm = Column(Float, nullable=True)
+    pan_diameter_max_cm = Column(Float, nullable=True)
     nutrition_protein_g = Column(Float, nullable=True)
     nutrition_carbs_g = Column(Float, nullable=True)
     nutrition_fiber_g = Column(Float, nullable=True)
     nutrition_glycemic_load = Column(Float, nullable=True)
     nutrition_calories_kcal = Column(Float, nullable=True)
+    nutrition_source = Column(String, nullable=True)
 
 
 class RecipeRatingDB(Base):

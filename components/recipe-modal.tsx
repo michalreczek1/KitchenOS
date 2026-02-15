@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { X, Clock, Users, ExternalLink, UtensilsCrossed, Loader2, PenLine } from 'lucide-react'
 import { fetchRecipeDetails, RECIPE_CATEGORIES, type RecipeCategory, type RecipeDetails } from '@/lib/api'
 import { categoryStyles } from '@/lib/recipe-category-styles'
@@ -34,22 +34,25 @@ const formatPortionsLabel = (count: number, unit: 'servings' | 'people') => {
   return `${count} ${unitLabel}`
 }
 
-const formatRecipePlanSentence = (count: number, unit: 'servings' | 'people') => {
-  if (unit === 'people') {
-    return `Przepis zaplanowano dla ${formatPortionsLabel(count, unit)}.`
-  }
-  return `Przepis zaplanowano na ${formatPortionsLabel(count, unit)}.`
-}
-
-const formatNutritionBasisSentence = (unit: 'servings' | 'people') => {
-  if (unit === 'people') return 'Wartości odżywcze wyliczono na 1 osobę.'
-  return 'Wartości odżywcze wyliczono na 1 porcję.'
-}
-
 const formatNutritionValue = (value?: number | null, suffix = 'g') => {
   if (typeof value !== 'number' || Number.isNaN(value)) return null
   return suffix ? `${value.toFixed(1)} ${suffix}` : value.toFixed(1)
 }
+
+const formatWeightLabel = (value?: number | null) => {
+  if (typeof value !== 'number' || Number.isNaN(value)) return null
+  const rounded = Math.round(value * 10) / 10
+  if (Math.abs(rounded - Math.round(rounded)) < 0.001) {
+    return `${Math.round(rounded)} g`
+  }
+  return `${rounded.toFixed(1)} g`
+}
+
+const normalizeKeywordText = (value?: string | null) =>
+  (value ?? '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
 
 export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
   const [recipe, setRecipe] = useState<RecipeDetails | null>(null)
@@ -59,8 +62,8 @@ export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
 
   const GENERIC_ICON_URL = 'https://cdn-icons-png.flaticon.com/512/3081/3081557.png'
   const sourceUrl =
-    (recipe as RecipeDetails & { source_url?: string; url?: string } | null)?.source_url ??
-    (recipe as RecipeDetails & { url?: string } | null)?.url
+    (recipe as (RecipeDetails & { source_url?: string; url?: string }) | null)?.source_url ??
+    (recipe as (RecipeDetails & { url?: string }) | null)?.url
   const isHttpUrl = (value?: string) => typeof value === 'string' && /^https?:\/\//i.test(value)
   const shouldShowImage = !!recipe?.image_url && recipe.image_url !== GENERIC_ICON_URL
 
@@ -68,6 +71,11 @@ export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
   const normalizedInstructions = normalizeToList(recipe?.instructions)
   const basePortions = Math.max(1, recipe?.servings ?? recipe?.base_portions ?? 1)
   const servingsUnit = recipe?.servings_unit === 'people' ? 'people' : 'servings'
+  const yieldDisplayLabel = recipe?.yield_display_label?.trim() || null
+  const totalWeightLabel = formatWeightLabel(recipe?.total_weight_g)
+  const portionWeightLabel = formatWeightLabel(recipe?.portion_weight_g)
+  const pieceWeightLabel = formatWeightLabel(recipe?.piece_weight_g)
+
   const proteinLabel = formatNutritionValue(recipe?.nutrition_protein_g)
   const carbsLabel = formatNutritionValue(recipe?.nutrition_carbs_g)
   const fiberLabel = formatNutritionValue(recipe?.nutrition_fiber_g)
@@ -82,6 +90,62 @@ export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
   ]
   const hasAnyNutrition = nutritionRows.some((row) => !!row.value)
   const denseNutritionLayout = normalizedIngredients.length >= 8
+
+  const yieldContext = useMemo(() => {
+    const hasPanSize =
+      typeof recipe?.pan_diameter_min_cm === 'number' || typeof recipe?.pan_diameter_max_cm === 'number'
+    if (hasPanSize) return 'pan'
+
+    const normalizedYieldLabel = normalizeKeywordText(yieldDisplayLabel)
+    const looksLikePieces =
+      typeof recipe?.piece_weight_g === 'number' ||
+      /\bszt|oponk|paczk|kawal|kawalek|kawalk/.test(normalizedYieldLabel)
+    if (looksLikePieces) return 'pieces'
+
+    if (typeof recipe?.total_weight_g === 'number') return 'weight'
+    return 'default'
+  }, [recipe?.pan_diameter_min_cm, recipe?.pan_diameter_max_cm, recipe?.piece_weight_g, recipe?.total_weight_g, yieldDisplayLabel])
+
+  const planSentence = useMemo(() => {
+    if (yieldContext === 'pan') {
+      const min = recipe?.pan_diameter_min_cm
+      const max = recipe?.pan_diameter_max_cm
+      if (typeof min === 'number' && typeof max === 'number') {
+        return `Przepis dla formy ${min.toFixed(0)}-${max.toFixed(0)} cm. Założono ${formatPortionsLabel(basePortions, 'servings')}.`
+      }
+      if (typeof min === 'number') {
+        return `Przepis dla formy ${min.toFixed(0)} cm. Założono ${formatPortionsLabel(basePortions, 'servings')}.`
+      }
+      return `Założono ${formatPortionsLabel(basePortions, 'servings')}.`
+    }
+
+    if (yieldContext === 'pieces') {
+      const piecesLabel = `${basePortions} ${getPolishPluralForm(basePortions, 'sztukę', 'sztuki', 'sztuk')}`
+      if (yieldDisplayLabel) return `Przepis zaplanowano na ${piecesLabel} (${yieldDisplayLabel}).`
+      return `Przepis zaplanowano na ${piecesLabel}.`
+    }
+
+    if (yieldContext === 'weight' && totalWeightLabel) {
+      const base = `Przepis ma około ${totalWeightLabel} całości. Założono ${formatPortionsLabel(basePortions, servingsUnit)}`
+      if (portionWeightLabel) return `${base} (~${portionWeightLabel}/porcję).`
+      return `${base}.`
+    }
+
+    if (yieldDisplayLabel) {
+      return `Przepis zaplanowano na podstawie: ${yieldDisplayLabel}.`
+    }
+    if (servingsUnit === 'people') {
+      return `Przepis zaplanowano dla ${formatPortionsLabel(basePortions, servingsUnit)}.`
+    }
+    return `Przepis zaplanowano na ${formatPortionsLabel(basePortions, servingsUnit)}.`
+  }, [yieldContext, recipe?.pan_diameter_min_cm, recipe?.pan_diameter_max_cm, basePortions, servingsUnit, yieldDisplayLabel, totalWeightLabel, portionWeightLabel])
+
+  const nutritionBasisSentence = useMemo(() => {
+    const basisLabel = servingsUnit === 'people' ? 'na 1 osobę' : 'na 1 porcję'
+    if (portionWeightLabel) return `Wartości odżywcze wyliczono ${basisLabel} (~${portionWeightLabel}).`
+    if (pieceWeightLabel && yieldContext === 'pieces') return `Wartości odżywcze wyliczono ${basisLabel} (~${pieceWeightLabel}).`
+    return `Wartości odżywcze wyliczono ${basisLabel}.`
+  }, [servingsUnit, portionWeightLabel, pieceWeightLabel, yieldContext])
 
   useEffect(() => {
     if (!recipeId) {
@@ -117,15 +181,9 @@ export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      {/* Backdrop */}
-      <div 
-        className="absolute inset-0 bg-background/80 backdrop-blur-sm"
-        onClick={onClose}
-      />
-      
-      {/* Modal */}
+      <div className="absolute inset-0 bg-background/80 backdrop-blur-sm" onClick={onClose} />
+
       <div className="relative max-h-[90vh] w-full max-w-2xl overflow-hidden rounded-2xl border border-border bg-card shadow-xl">
-        {/* Close Button */}
         <button
           onClick={onClose}
           className="absolute top-4 right-4 z-10 flex h-10 w-10 items-center justify-center rounded-full bg-card/80 text-muted-foreground backdrop-blur-sm transition-colors hover:bg-card hover:text-foreground"
@@ -144,20 +202,14 @@ export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
           </div>
         ) : recipe ? (
           <div className="overflow-y-auto max-h-[90vh]">
-            {/* Image */}
             {shouldShowImage && (
               <div className="relative aspect-video w-full overflow-hidden">
-                <img
-                  src={recipe.image_url || "/placeholder.svg"}
-                  alt={recipe.title}
-                  className="h-full w-full object-cover"
-                />
+                <img src={recipe.image_url || '/placeholder.svg'} alt={recipe.title} className="h-full w-full object-cover" />
                 <div className="absolute inset-0 bg-gradient-to-t from-card via-transparent to-transparent" />
               </div>
             )}
 
             <div className="p-6 space-y-6">
-              {/* Header */}
               <div>
                 <h2 className="text-2xl font-bold text-foreground">{recipe.title}</h2>
                 <div className="mt-4 flex flex-wrap gap-2">
@@ -195,7 +247,7 @@ export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
                       <span>Gotowanie: {recipe.cook_time}</span>
                     </div>
                   )}
-                  {basePortions && (
+                  {basePortions > 0 && (
                     <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
                       <Users className="h-4 w-4 icon-sky" />
                       <span>{formatPortionsLabel(basePortions, servingsUnit)}</span>
@@ -204,7 +256,6 @@ export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
                 </div>
               </div>
 
-              {/* Ingredients */}
               {normalizedIngredients.length > 0 && (
                 <div>
                   <h3 className="mb-3 font-semibold text-foreground">Składniki</h3>
@@ -216,33 +267,28 @@ export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
                       </li>
                     ))}
                   </ul>
-                  <div
-                    className={`mt-4 rounded-xl border border-border bg-muted/30 text-sm ${
-                      denseNutritionLayout ? 'p-3' : 'p-4'
-                    }`}
-                  >
+                  <div className={`mt-4 rounded-xl border border-border bg-muted/30 text-sm ${denseNutritionLayout ? 'p-3' : 'p-4'}`}>
                     <h4 className="font-semibold text-foreground">Wartości odżywcze</h4>
-                    <p className="mt-2 text-muted-foreground">{formatRecipePlanSentence(basePortions, servingsUnit)}</p>
-                    <p className="mt-1 text-muted-foreground">{formatNutritionBasisSentence(servingsUnit)}</p>
+                    <p className="mt-2 text-muted-foreground">{planSentence}</p>
+                    <p className="mt-1 text-muted-foreground">{nutritionBasisSentence}</p>
                     {hasAnyNutrition ? (
                       <ul className={`mt-3 text-muted-foreground ${denseNutritionLayout ? 'space-y-1.5' : 'space-y-2'}`}>
                         {nutritionRows.map((row) => (
                           <li key={row.label} className="flex items-start gap-2">
                             <span className="mt-1.5 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-primary" />
-                            <span>{row.label}: {row.value ?? 'brak danych'}</span>
+                            <span>
+                              {row.label}: {row.value ?? 'brak danych'}
+                            </span>
                           </li>
                         ))}
                       </ul>
                     ) : (
-                      <p className="mt-2 text-muted-foreground">
-                        Wartości odżywcze niedostępne dla tego przepisu.
-                      </p>
+                      <p className="mt-2 text-muted-foreground">Wartości odżywcze niedostępne dla tego przepisu.</p>
                     )}
                   </div>
                 </div>
               )}
 
-              {/* Instructions */}
               {normalizedInstructions.length > 0 && (
                 <div>
                   <h3 className="mb-3 font-semibold text-foreground">Instrukcje</h3>
@@ -259,7 +305,6 @@ export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
                 </div>
               )}
 
-              {/* Source Link */}
               {isHttpUrl(sourceUrl) ? (
                 <a
                   href={sourceUrl}
@@ -273,7 +318,7 @@ export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
               ) : (
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
                   <PenLine className="h-4 w-4" />
-                  Przepis własny — brak linku źródłowego
+                  Przepis własny - brak linku źródłowego
                 </div>
               )}
             </div>
