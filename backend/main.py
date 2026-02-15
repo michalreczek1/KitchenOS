@@ -186,20 +186,20 @@ def decode_google_state_token(state: str) -> int:
     try:
         payload = jwt.decode(state, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
     except JWTError:
-        raise HTTPException(status_code=400, detail="NieprawidĂ„ÂąĂ˘Â€Âšowy token stanu OAuth")
+        raise HTTPException(status_code=400, detail="Nieprawidlowy token stanu OAuth")
     user_id = payload.get("sub")
     if not user_id:
-        raise HTTPException(status_code=400, detail="Brak uĂ„ÂąĂ„Â˝ytkownika w tokenie OAuth")
+        raise HTTPException(status_code=400, detail="Brak uzytkownika w tokenie OAuth")
     try:
         return int(user_id)
     except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail="NieprawidĂ„ÂąĂ˘Â€Âšowy identyfikator uĂ„ÂąĂ„Â˝ytkownika")
+        raise HTTPException(status_code=400, detail="Nieprawidlowy identyfikator uzytkownika")
 
 
 def get_google_token_record(db: Session, user_id: int) -> GoogleCalendarDB:
     record = db.query(GoogleCalendarDB).filter(GoogleCalendarDB.owner_id == user_id).first()
     if not record:
-        raise HTTPException(status_code=400, detail="Brak poĂ„ÂąĂ˘Â€ÂšĂÂ„Ă˘Â€Â¦czenia z Google Calendar")
+        raise HTTPException(status_code=400, detail="Brak polaczenia z Google Calendar")
     return record
 
 
@@ -207,7 +207,7 @@ def refresh_google_access_token(db: Session, record: GoogleCalendarDB) -> str:
     if record.expires_at and record.expires_at > datetime.datetime.utcnow() + datetime.timedelta(seconds=60):
         return record.access_token
     if not record.refresh_token:
-        raise HTTPException(status_code=401, detail="Brak refresh token. PoĂ„ÂąĂ˘Â€ÂšĂÂ„Ă˘Â€Â¦cz Google ponownie.")
+        raise HTTPException(status_code=401, detail="Brak refresh token. Polacz Google ponownie.")
 
     ensure_google_config()
     response = requests.post(
@@ -221,7 +221,7 @@ def refresh_google_access_token(db: Session, record: GoogleCalendarDB) -> str:
         timeout=20,
     )
     if not response.ok:
-        raise HTTPException(status_code=502, detail="Nie udaĂ„ÂąĂ˘Â€Âšo siĂÂ„Ă˘Â„Â˘ odĂ„ÂąĂ˘Â€ÂşwieĂ„ÂąĂ„Â˝yĂÂ„Ă˘Â€Âˇ tokenu Google")
+        raise HTTPException(status_code=502, detail="Nie udalo sie odswiezyc tokenu Google")
     data = response.json()
     record.access_token = data.get("access_token", record.access_token)
     expires_in = data.get("expires_in")
@@ -271,7 +271,7 @@ def require_admin(user: UserDB = Depends(get_current_user)) -> UserDB:
     if not user.is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Brak uprawnieĂ…Â„ administratora",
+            detail="Brak uprawnien administratora",
         )
     return user
 
@@ -291,7 +291,7 @@ def log_parse_attempt(user_id: int, url: str, status_value: str, error: Optional
         )
         log_db.commit()
     except Exception:
-        logger.error("Nie udaĂ…Â‚o siĂ„Â™ zapisaĂ„Â‡ logu parsowania", exc_info=True)
+        logger.error("Nie udalo sie zapisac logu parsowania", exc_info=True)
         log_db.rollback()
     finally:
         log_db.close()
@@ -625,7 +625,14 @@ def _extract_piece_weight_g(norm_text: str) -> Optional[float]:
 
 
 def _extract_total_weight_g(norm_text: str) -> Optional[float]:
-    matches = re.findall(r"(?:okolo|ponad|do|~)?\s*(\d+(?:[.,]\d+)?)\s*(kg|g)\b", norm_text)
+    contextual_patterns = [
+        r"(?:liczba\s+porcji|porcji|porcje|yield|servings?)\s*[:\-]?\s*(?:okolo|ponad|do|~)?\s*(\d+(?:[.,]\d+)?)\s*(kg|g)\b",
+        r"(?:okolo|ponad|do|~)?\s*(\d+(?:[.,]\d+)?)\s*(kg|g)\b[^.\n]{0,24}(?:dania|zupy|calosci|calosc)\b",
+    ]
+    matches: List[tuple[str, str]] = []
+    for pattern in contextual_patterns:
+        matches.extend(re.findall(pattern, norm_text))
+
     if not matches:
         return None
 
@@ -638,6 +645,29 @@ def _extract_total_weight_g(norm_text: str) -> Optional[float]:
     if not totals:
         return None
     return round(max(totals), 1)
+
+
+def extract_yield_text_from_page(scraper: Any, html_content: str) -> str:
+    try:
+        raw = (scraper.yields() or "").strip()
+        if raw:
+            return raw
+    except Exception:
+        pass
+
+    try:
+        text_blob = scraper.soup.get_text("\n", strip=True)
+    except Exception:
+        text_blob = re.sub(r"<[^>]+>", " ", html_content or "")
+
+    lines = [re.sub(r"\s+", " ", line).strip() for line in re.split(r"[\r\n]+", text_blob)]
+    for line in lines:
+        if not line:
+            continue
+        norm = _normalize_text(line)
+        if re.search(r"\b(liczba porcji|porcj\w*|servings?|dla\s+\d+\s+osob|tortownica|forma|blacha)\b", norm) and re.search(r"\d", norm):
+            return line
+    return ""
 
 
 def _estimate_total_weight_from_ingredients(ingredients: List[str]) -> Optional[float]:
@@ -853,6 +883,13 @@ def resolve_yield_context_weights(
         return context
 
     portions = max(1, int(context.base_portions or 1))
+    if context.mode == "unknown" and portions <= 1:
+        standard_weight_g = _get_standard_portion_weight_g(title, ingredients, instructions)
+        portions = max(1, round(total_weight_g / standard_weight_g))
+        context.base_portions = portions
+        context.mode = "total_weight_only"
+        context.assumption_reason = f"Estimated portions from total weight using standard {standard_weight_g:.0f} g"
+
     portion_weight = round(total_weight_g / portions, 1)
     context.total_weight_g = round(total_weight_g, 1)
     context.portion_weight_g = portion_weight
@@ -1328,7 +1365,7 @@ async def google_oauth_callback(code: str, state: str, db: Session = Depends(get
     user_id = decode_google_state_token(state)
     user = db.query(UserDB).filter(UserDB.id == user_id).first()
     if not user:
-        raise HTTPException(status_code=404, detail="UĂ„ÂąĂ„Â˝ytkownik nie znaleziony")
+        raise HTTPException(status_code=404, detail="Uzytkownik nie znaleziony")
 
     response = requests.post(
         "https://oauth2.googleapis.com/token",
@@ -1342,7 +1379,7 @@ async def google_oauth_callback(code: str, state: str, db: Session = Depends(get
         timeout=20,
     )
     if not response.ok:
-        raise HTTPException(status_code=502, detail="Nie udaĂ„ÂąĂ˘Â€Âšo siĂÂ„Ă˘Â„Â˘ poĂ„ÂąĂ˘Â€ÂšĂÂ„Ă˘Â€Â¦czyĂÂ„Ă˘Â€Âˇ z Google")
+        raise HTTPException(status_code=502, detail="Nie udalo sie polaczyc z Google")
 
     data = response.json()
     expires_in = data.get("expires_in")
@@ -1392,7 +1429,7 @@ async def google_calendars(current_user: UserDB = Depends(get_current_user), db:
         "https://www.googleapis.com/calendar/v3/users/me/calendarList",
     )
     if not response.ok:
-        raise HTTPException(status_code=502, detail="Nie udaĂ„ÂąĂ˘Â€Âšo siĂÂ„Ă˘Â„Â˘ pobraĂÂ„Ă˘Â€Âˇ kalendarzy")
+        raise HTTPException(status_code=502, detail="Nie udalo sie pobrac kalendarzy")
     data = response.json()
     calendars = [
         GoogleCalendarItem(
@@ -1419,7 +1456,7 @@ async def google_calendar_select(
         f"https://www.googleapis.com/calendar/v3/users/me/calendarList/{payload.calendar_id}",
     )
     if not response.ok:
-        raise HTTPException(status_code=400, detail="Nie znaleziono kalendarza lub brak uprawnieĂ„ÂąĂ˘Â€Âž")
+        raise HTTPException(status_code=400, detail="Nie znaleziono kalendarza lub brak uprawnien")
     data = response.json()
     record.calendar_id = payload.calendar_id
     record.calendar_summary = data.get("summary")
@@ -1439,7 +1476,7 @@ async def google_plan_sync(
     db: Session = Depends(get_db),
 ):
     if not payload.events:
-        raise HTTPException(status_code=400, detail="Brak wydarzeĂ„ÂąĂ˘Â€Âž do synchronizacji")
+        raise HTTPException(status_code=400, detail="Brak wydarzen do synchronizacji")
 
     record = get_google_token_record(db, current_user.id)
     calendar_id = payload.calendar_id or record.calendar_id
@@ -1459,7 +1496,7 @@ async def google_plan_sync(
         try:
             dates.append(datetime.date.fromisoformat(event.date))
         except ValueError:
-            raise HTTPException(status_code=400, detail=f"NieprawidĂ„ÂąĂ˘Â€Âšowa data: {event.date}")
+            raise HTTPException(status_code=400, detail=f"Nieprawidlowa data: {event.date}")
 
     date_min = min(dates)
     date_max = max(dates)
@@ -1487,7 +1524,7 @@ async def google_plan_sync(
             params=params,
         )
         if not response.ok:
-            raise HTTPException(status_code=502, detail="Nie udaĂ„ÂąĂ˘Â€Âšo siĂÂ„Ă˘Â„Â˘ pobraĂÂ„Ă˘Â€Âˇ wydarzeĂ„ÂąĂ˘Â€Âž z Google")
+            raise HTTPException(status_code=502, detail="Nie udalo sie pobrac wydarzen z Google")
         data = response.json()
         for item in data.get("items", []):
             event_id = item.get("id")
@@ -1727,7 +1764,7 @@ async def parse_and_save_recipe(
         image_url = scraper.image()
         instructions = scraper.instructions()
         instructions_list = _normalize_instruction_list(instructions)
-        yields_text = scraper.yields() or ""
+        yields_text = extract_yield_text_from_page(scraper=scraper, html_content=html_content)
         yield_context = parse_yield_context(
             yield_text=yields_text,
             title=title,
