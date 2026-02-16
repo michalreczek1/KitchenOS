@@ -3134,6 +3134,39 @@ def _generate_shopping_list_fallback(compiled_data: List[dict]) -> List[dict]:
     return []
 
 
+def _filter_out_water_items(shopping_list: List[dict]) -> List[dict]:
+    filtered_list: List[dict] = []
+    removed_count = 0
+
+    for entry in shopping_list:
+        if not isinstance(entry, dict):
+            continue
+        category = str(entry.get("category") or "").strip()
+        raw_items = entry.get("items")
+        if not category or not isinstance(raw_items, list):
+            continue
+
+        next_items: List[str] = []
+        for raw_item in raw_items:
+            if not isinstance(raw_item, str):
+                continue
+            item = raw_item.strip()
+            if not item:
+                continue
+            normalized = _normalize_text(item)
+            if re.search(r"\bwod\w*\b", normalized):
+                removed_count += 1
+                continue
+            next_items.append(item)
+
+        if next_items:
+            filtered_list.append({"category": category, "items": next_items})
+
+    if removed_count:
+        logger.info("Filtered %s water item(s) from shopping list", removed_count)
+    return filtered_list
+
+
 @app.post(
     "/api/planner/generate", response_model=ShoppingListResponse, tags=["Planner"]
 )
@@ -3200,6 +3233,8 @@ async def generate_shopping_list(
         shopping_list_data = _generate_shopping_list_fallback(compiled_data)
         if not warning:
             warning = "Lista wygenerowana bez AI. Sprawdz ilosci."
+
+    shopping_list_data = _filter_out_water_items(shopping_list_data)
 
     response = ShoppingListResponse(
         shopping_list=shopping_list_data,
