@@ -479,7 +479,7 @@ class RecipeRatingResponse(BaseModel):
 
 class RecipeSelection(BaseModel):
     id: int = Field(..., gt=0, description="ID przepisu")
-    portions: int = Field(..., gt=0, le=100, description="Liczba porcji (1-100)")
+    portions: int = Field(..., gt=0, le=500, description="Liczba porcji (1-500)")
 
 
 class PlannerRequest(BaseModel):
@@ -495,6 +495,8 @@ class ShoppingListResponse(BaseModel):
     shopping_list: List[ShoppingCategory]
     total_recipes: int
     generated_at: datetime.datetime
+    generation_mode: Optional[Literal["ai", "fallback"]] = None
+    warning: Optional[str] = None
 
 
 class ParseLogResponse(BaseModel):
@@ -563,6 +565,7 @@ SNACK_MAX_KCAL_PER_PORTION = 800.0
 MEAL_MAX_KCAL_PER_PORTION = 900.0
 MEAL_MIN_PORTION_WEIGHT_G = 140.0
 GL_MAX_DISPLAY_VALUE = 50.0
+PLANNER_MAX_PORTIONS = 500
 LOW_CONFIDENCE_TERMS = (
     "dowolna ilosc",
     "dowolna ilość",
@@ -2608,6 +2611,496 @@ async def delete_recipe(
     logger.info(f"Deleted recipe: {recipe.title} (ID: {recipe_id})")
 
 
+SHOPPING_CATEGORIES_ORDER = [
+    "Warzywa i owoce",
+    "Mieso i ryby",
+    "Nabial i jaja",
+    "Pieczywo i makarony",
+    "Oleje i tluszcze",
+    "Przyprawy i dodatki",
+    "Produkty sypkie",
+    "Inne",
+]
+
+SHOPPING_PIECE_UNITS = {
+    "szt",
+    "zabek",
+    "glowka",
+    "puszka",
+    "paczka",
+    "opakowanie",
+    "plasterek",
+    "kromka",
+}
+
+SHOPPING_UNIT_MAP = {
+    "kg": "kg",
+    "g": "g",
+    "l": "l",
+    "ml": "ml",
+    "szt": "szt",
+    "sztuk": "szt",
+    "sztuki": "szt",
+    "lyzka": "lyzka",
+    "lyzki": "lyzka",
+    "lyzek": "lyzka",
+    "lyzeczka": "lyzeczka",
+    "lyzeczki": "lyzeczka",
+    "lyzeczek": "lyzeczka",
+    "szklanka": "szklanka",
+    "szklanki": "szklanka",
+    "opakowanie": "opakowanie",
+    "opakowania": "opakowanie",
+    "zabek": "zabek",
+    "zabki": "zabek",
+    "glowka": "glowka",
+    "glowki": "glowka",
+    "puszka": "puszka",
+    "puszki": "puszka",
+    "paczka": "paczka",
+    "paczki": "paczka",
+    "plasterek": "plasterek",
+    "plasterki": "plasterek",
+    "kromka": "kromka",
+    "kromki": "kromka",
+}
+
+
+def _format_float_compact(value: float, precision: int = 1) -> str:
+    rounded = round(value, precision)
+    if abs(rounded - int(rounded)) < 1e-9:
+        return str(int(rounded))
+    return f"{rounded:.{precision}f}".rstrip("0").rstrip(".")
+
+
+def _parse_quantity_token(token: str) -> Optional[float]:
+    if not token:
+        return None
+    token = token.strip()
+    fraction_match = re.match(r"^(\d+)\s*/\s*(\d+)$", token)
+    if fraction_match:
+        denominator = int(fraction_match.group(2))
+        if denominator == 0:
+            return None
+        return int(fraction_match.group(1)) / denominator
+    return _parse_number_token(token)
+
+
+def _normalize_shopping_unit(raw_unit: Optional[str]) -> Optional[str]:
+    if not raw_unit:
+        return None
+    normalized = _normalize_text(raw_unit)
+    return SHOPPING_UNIT_MAP.get(normalized)
+
+
+def _normalize_shopping_name(raw_name: str) -> str:
+    cleaned = (raw_name or "").strip(" ,.-")
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned
+
+
+def _should_default_to_piece_unit(norm_name: str) -> bool:
+    piece_keywords = (
+        "cebul",
+        "jaj",
+        "papryk",
+        "pomidor",
+        "ziemniak",
+        "marchew",
+        "ogorek",
+        "cytryn",
+        "limonk",
+        "banan",
+        "jablk",
+        "czosnek",
+    )
+    return any(keyword in norm_name for keyword in piece_keywords)
+
+
+def _parse_shopping_ingredient_line(ingredient: str, factor: float) -> Optional[dict]:
+    line = _normalize_shopping_name(ingredient)
+    if not line:
+        return None
+
+    match = re.match(
+        r"^\s*(\d+(?:[.,]\d+)?(?:\s*/\s*\d+(?:[.,]\d+)?)?)(?:\s*[-–]\s*(\d+(?:[.,]\d+)?))?\s*(kg|g|ml|l|szt(?:uk(?:i)?)?|lyzki?|lyzek|lyzeczki?|lyzeczek|szklanki?|opakowani(?:e|a)|zabki?|glowki?|puszki?|paczki?|plasterki?|kromki?)?\b[\s,.-]*(.*)$",
+        line,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return {"name": line, "quantity": None, "unit": None}
+
+    primary_raw = match.group(1)
+    range_max_raw = match.group(2)
+    unit_raw = match.group(3)
+    name_raw = match.group(4) or line
+
+    quantity = _parse_quantity_token(primary_raw) if primary_raw else None
+    if range_max_raw:
+        range_max = _parse_quantity_token(range_max_raw)
+        if range_max is not None and range_max > 0:
+            quantity = range_max
+
+    if quantity is not None:
+        quantity = max(0.0, quantity * max(0.0, factor))
+
+    unit = _normalize_shopping_unit(unit_raw)
+    name = _normalize_shopping_name(name_raw)
+    if not name:
+        name = line
+
+    if quantity is not None and unit is None and _should_default_to_piece_unit(_normalize_text(name)):
+        unit = "szt"
+
+    return {"name": name, "quantity": quantity, "unit": unit}
+
+
+def _format_shopping_amount(quantity: Optional[float], unit: Optional[str]) -> str:
+    if quantity is None or quantity <= 0.0:
+        return ""
+
+    if unit in SHOPPING_PIECE_UNITS:
+        rounded = int(quantity) if float(quantity).is_integer() else int(quantity) + 1
+        rounded = max(1, rounded)
+        return f"{rounded} {unit}" if unit else str(rounded)
+
+    if unit in {"g", "ml"}:
+        if quantity >= 10:
+            value = str(int(round(quantity)))
+        else:
+            value = _format_float_compact(quantity, precision=1)
+    elif unit in {"kg", "l"}:
+        value = _format_float_compact(quantity, precision=2)
+    else:
+        value = _format_float_compact(quantity, precision=1)
+    return f"{value} {unit}".strip() if unit else value
+
+
+def _categorize_shopping_item(name: str) -> str:
+    normalized = _normalize_text(name)
+    category_rules = {
+        "Warzywa i owoce": (
+            "cebula",
+            "cebul",
+            "czosnek",
+            "marchew",
+            "ziemniak",
+            "pomidor",
+            "papryk",
+            "ogorek",
+            "cytryn",
+            "limonk",
+            "pietruszk",
+            "szpinak",
+            "brokul",
+            "kalafior",
+            "jablk",
+            "banan",
+            "owoc",
+            "warzyw",
+        ),
+        "Mieso i ryby": (
+            "kurczak",
+            "wolowin",
+            "wieprz",
+            "kielbas",
+            "boczek",
+            "szynk",
+            "ryba",
+            "losos",
+            "tunczyk",
+            "mieso",
+            "indyk",
+        ),
+        "Nabial i jaja": (
+            "mleko",
+            "jogurt",
+            "smietan",
+            "ser",
+            "serek",
+            "mozzarella",
+            "feta",
+            "mascarpone",
+            "twarog",
+            "jaj",
+            "maslo",
+        ),
+        "Pieczywo i makarony": (
+            "makaron",
+            "chleb",
+            "bulka",
+            "pieczywo",
+            "tortilla",
+            "kasza",
+            "ryz",
+            "platki",
+            "kuskus",
+            "gnocchi",
+        ),
+        "Oleje i tluszcze": (
+            "olej",
+            "oliwa",
+            "tluszcz",
+            "smalec",
+            "maslo klarowane",
+            "ghee",
+        ),
+        "Przyprawy i dodatki": (
+            "sol",
+            "pieprz",
+            "papryka",
+            "kurkuma",
+            "curry",
+            "przypraw",
+            "ziola",
+            "ocet",
+            "sos",
+            "musztard",
+            "ketchup",
+        ),
+        "Produkty sypkie": (
+            "maka",
+            "cukier",
+            "kasza",
+            "ryz",
+            "platki",
+            "kakao",
+            "proszek",
+            "soda",
+            "drozdze",
+            "fasol",
+            "soczewic",
+            "ciecierzyc",
+        ),
+    }
+    for category, keywords in category_rules.items():
+        if any(keyword in normalized for keyword in keywords):
+            return category
+    return "Inne"
+
+
+def _validate_ai_shopping_list_payload(payload: Any) -> Optional[List[dict]]:
+    if not isinstance(payload, dict):
+        return None
+    raw_shopping_list = payload.get("shopping_list")
+    if not isinstance(raw_shopping_list, list):
+        return None
+
+    validated_map: dict[str, List[str]] = {}
+    allowed_categories = set(SHOPPING_CATEGORIES_ORDER)
+    for category_entry in raw_shopping_list:
+        if not isinstance(category_entry, dict):
+            continue
+        category_name = str(category_entry.get("category") or "").strip()
+        raw_items = category_entry.get("items")
+        if not category_name or not isinstance(raw_items, list):
+            continue
+        items: List[str] = []
+        for raw_item in raw_items:
+            if not isinstance(raw_item, str):
+                continue
+            item = raw_item.strip()
+            if item:
+                items.append(item)
+        if items:
+            if category_name not in allowed_categories:
+                category_name = "Inne"
+            validated_map.setdefault(category_name, []).extend(items)
+
+    if not validated_map:
+        return None
+
+    validated: List[dict] = []
+    for category in SHOPPING_CATEGORIES_ORDER:
+        items = validated_map.get(category)
+        if not items:
+            continue
+        validated.append({"category": category, "items": items})
+    return validated or None
+
+
+def _extract_json_object_from_text(text: str) -> Optional[dict]:
+    if not text:
+        return None
+    start = text.find("{")
+    if start < 0:
+        return None
+
+    depth = 0
+    in_string = False
+    escape = False
+    end = None
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+            continue
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                end = index + 1
+                break
+
+    if end is None:
+        return None
+
+    try:
+        return json.loads(text[start:end])
+    except json.JSONDecodeError:
+        return None
+
+
+def _extract_failed_generation_snippet(error_message: str) -> Optional[str]:
+    if not error_message or "failed_generation" not in error_message:
+        return None
+    match = re.search(r'"failed_generation"\s*:\s*"([^"]+)"', error_message)
+    if not match:
+        return "failed_generation present"
+    snippet = match.group(1).replace('\\"', '"')
+    return snippet[:500]
+
+
+def _build_shopping_prompt(compiled_data: List[dict], compact: bool = False) -> str:
+    compiled_json = json.dumps(compiled_data, ensure_ascii=False)
+    base_lines = [
+        "You are KitchenOS shopping list assistant.",
+        "Return valid JSON object only.",
+        'Expected shape: {"shopping_list":[{"category":"...","items":["..."]}]}',
+        "Never add products that are not in input.",
+        "Merge identical ingredients and scale by factor.",
+        "Round up piece counts.",
+    ]
+    if compact:
+        base_lines = [
+            "Return JSON only.",
+            'Use shape {"shopping_list":[{"category":"...","items":["..."]}]}',
+            "Use only ingredients from input.",
+            "Do not include markdown.",
+        ]
+    return "\n".join(base_lines + ["INPUT:", compiled_json])
+
+
+def _generate_shopping_list_with_ai(compiled_data: List[dict]) -> tuple[Optional[List[dict]], Optional[str]]:
+    if client is None:
+        return None, "AI niedostepne, wlaczono tryb awaryjny."
+
+    attempts = [
+        {"compact": False, "temperature": 0.0, "response_format": True},
+        {"compact": True, "temperature": 0.0, "response_format": True},
+        {"compact": True, "temperature": 0.0, "response_format": False},
+    ]
+
+    for attempt_number, attempt in enumerate(attempts, start=1):
+        prompt = _build_shopping_prompt(compiled_data, compact=attempt["compact"])
+        try:
+            completion_kwargs = {
+                "messages": [{"role": "user", "content": prompt}],
+                "model": GROQ_MODEL,
+                "temperature": attempt["temperature"],
+            }
+            if attempt["response_format"]:
+                completion_kwargs["response_format"] = {"type": "json_object"}
+
+            chat_completion = client.chat.completions.create(**completion_kwargs)
+            content = (chat_completion.choices[0].message.content or "").strip()
+            if attempt["response_format"]:
+                parsed = json.loads(content)
+            else:
+                parsed = _extract_json_object_from_text(content)
+                if parsed is None:
+                    raise ValueError("No JSON object in AI response")
+
+            validated = _validate_ai_shopping_list_payload(parsed)
+            if validated:
+                return validated, None
+
+            logger.warning("Shopping AI attempt %s returned invalid payload shape", attempt_number)
+        except Exception as exc:
+            raw_error = str(exc)
+            failed_generation = _extract_failed_generation_snippet(raw_error)
+            if failed_generation:
+                logger.warning(
+                    "Shopping AI attempt %s failed_generation: %s",
+                    attempt_number,
+                    failed_generation,
+                )
+            else:
+                logger.warning("Shopping AI attempt %s failed: %s", attempt_number, raw_error[:500])
+
+    return None, "Tryb awaryjny: AI nie zwrocilo poprawnego JSON."
+
+
+def _generate_shopping_list_fallback(compiled_data: List[dict]) -> List[dict]:
+    aggregated: dict[tuple[str, str], dict] = {}
+
+    for recipe_entry in compiled_data:
+        factor = _coerce_nutrition_number(recipe_entry.get("factor")) or 1.0
+        ingredients = recipe_entry.get("ingredients") or []
+        if not isinstance(ingredients, list):
+            continue
+
+        for ingredient in ingredients:
+            if not isinstance(ingredient, str):
+                continue
+            parsed = _parse_shopping_ingredient_line(ingredient, factor)
+            if not parsed:
+                continue
+
+            name = _normalize_shopping_name(parsed.get("name") or "")
+            if not name:
+                continue
+            quantity = _coerce_nutrition_number(parsed.get("quantity"))
+            unit = parsed.get("unit") or ""
+
+            if quantity is not None and quantity < 0.05:
+                continue
+
+            key = (_normalize_text(name), unit)
+            existing = aggregated.get(key)
+            if existing is None:
+                aggregated[key] = {"name": name, "quantity": quantity, "unit": unit}
+                continue
+
+            existing_qty = _coerce_nutrition_number(existing.get("quantity"))
+            if quantity is None or existing_qty is None:
+                existing["quantity"] = existing_qty if existing_qty is not None else quantity
+            else:
+                existing["quantity"] = existing_qty + quantity
+
+    if not aggregated:
+        return []
+
+    categorized: dict[str, List[str]] = {category: [] for category in SHOPPING_CATEGORIES_ORDER}
+    for entry in sorted(aggregated.values(), key=lambda item: _normalize_text(item["name"])):
+        amount = _format_shopping_amount(
+            _coerce_nutrition_number(entry.get("quantity")),
+            entry.get("unit") or None,
+        )
+        label = entry["name"] if not amount else f"{entry['name']} ({amount})"
+        category = _categorize_shopping_item(entry["name"])
+        categorized.setdefault(category, []).append(label)
+
+    shopping_list: List[dict] = []
+    for category in SHOPPING_CATEGORIES_ORDER:
+        items = categorized.get(category) or []
+        if items:
+            shopping_list.append({"category": category, "items": items})
+
+    if shopping_list:
+        return shopping_list
+    return []
+
+
 @app.post(
     "/api/planner/generate", response_model=ShoppingListResponse, tags=["Planner"]
 )
@@ -2632,13 +3125,15 @@ async def generate_shopping_list(
             .first()
         )
         if recipe:
-            factor = item.portions / recipe.base_portions
+            requested_portions = max(1, min(PLANNER_MAX_PORTIONS, int(item.portions)))
+            base_portions = max(1, int(recipe.base_portions or 1))
+            factor = requested_portions / base_portions
             compiled_data.append(
                 {
                     "title": recipe.title,
-                    "factor": round(factor, 2),
-                    "base_portions": recipe.base_portions,
-                    "requested_portions": item.portions,
+                    "factor": round(factor, 3),
+                    "base_portions": base_portions,
+                    "requested_portions": requested_portions,
                     "ingredients": recipe.ingredients,
                 }
             )
@@ -2657,94 +3152,36 @@ async def generate_shopping_list(
             detail="Brak danych do wygenerowania listy zakupów",
         )
 
-    if client is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="AI jest niedostępne. Skonfiguruj GROQ_API_KEY.",
-        )
-
-    # Ulepszone prompt dla AI (ASCII-only, bez problemow z kodowaniem)
-    compiled_json = json.dumps(compiled_data, indent=2, ensure_ascii=False)
-    prompt = "\n".join(
-        [
-            "Dzialasz jako ekspert logistyki kuchennej KitchenOS. Twoim zadaniem jest skonsolidowanie skladnikow z wielu przepisow w jedna, przejrzysta liste zakupow.",
-            "",
-            "DANE WEJSCIOWE:",
-            compiled_json,
-            "",
-            "RESTRYKCYJNE ZASADY GENEROWANIA:",
-            "",
-            "0. ZERO HALUCYNACJI (KRYTYCZNE):",
-            "   - NIE DODAWAJ zadnych produktow, ktorych nie ma w danych wejsciowych.",
-            '   - Jesli skladnik w wejsciu jest nieprecyzyjny (np. "oliwa truflowa"), zachowaj go dokladnie jako osobny produkt.',
-            '   - Nie dodawaj ogolnikow typu "mieso", "sos", "makaron" itp., jesli nie wystepuja w wejsciu.',
-            "",
-            "1. FILTRACJA ZER (KRYTYCZNE):",
-            '   - Jesli po przeliczeniu ilosc jakiegokolwiek skladnika wynosi 0, jest bliska 0 (np. 0.1) lub tekst sugeruje brak (np. "opcjonalnie"), CALKOWICIE USUN ten produkt z listy.',
-            '   - NIE WOLNO wypisywac produktow z iloscia "0".',
-            "",
-            "2. INTELIGENTNE ZAOKRAGLANIE W GORE:",
-            "   - Produkty liczone w sztukach (cebula, czosnek, jaja, warzywa w calosci) ZAWSZE zaokraglaj do najblizszej LICZBY CALKOWITEJ W GORE.",
-            '   - NIE zamieniaj jednostek wagowych (g, ml) na "sztuki". Jesli wejscie ma gramy lub lyzki - zachowaj te jednostki.',
-            "   - Przyklad: 0.2 cebuli -> 1 cebula, 1.1 pora -> 2 pory.",
-            "",
-            "3. AGREGACJA I JEDNOSTKI:",
-            "   - Zsumuj identyczne skladniki (np. sol z 3 przepisow).",
-            '   - Format: "Nazwa produktu (Ilosc Jednostka)".',
-            "   - Jesli skladnik w wejsciu nie ma ilosci, wypisz sama nazwe bez nawiasu.",
-            "   - Uzywaj czytelnych ulamkow (1/2, 1/4) dla szklanek/lyzek, ale liczb calkowitych dla sztuk.",
-            "",
-            "4. KATEGORYZACJA:",
-            "   - Przypisz produkty do kategorii: Warzywa i owoce, Mieso i ryby, Nabial i jaja, Pieczywo i makarony, Oleje i tluszcze, Przyprawy i dodatki, Produkty sypkie, Inne.",
-            "",
-            "ZWROC WYLACZNIE CZYSTY JSON:",
-            "{",
-            '  "shopping_list": [',
-            "    {",
-            '      "category": "Warzywa i owoce",',
-            '      "items": ["Cebula (2 sztuki)", "Czosnek (1 glowka)"]',
-            "    }",
-            "  ]",
-            "}",
-        ]
-    )
-
+    warning: Optional[str] = None
+    generation_mode: Literal["ai", "fallback"] = "ai"
+    shopping_list_data: Optional[List[dict]] = None
 
     try:
-        chat_completion = client.chat.completions.create(
-            messages=[{"role": "user", "content": prompt}],
-            model=GROQ_MODEL,
-            temperature=0.1,
-            response_format={"type": "json_object"},
-        )
-
-        ai_response = chat_completion.choices[0].message.content
-        result = json.loads(ai_response)
-
-        # Dodaj metadane
-        response = ShoppingListResponse(
-            shopping_list=result.get("shopping_list", []),
-            total_recipes=len(compiled_data),
-            generated_at=datetime.datetime.utcnow(),
-        )
-
-        logger.info(
-            f"Successfully generated shopping list with {len(response.shopping_list)} categories"
-        )
-        return response
-
-    except json.JSONDecodeError as e:
-        logger.error(f"AI returned invalid JSON: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="AI zwróciło nieprawidłowy format danych",
-        )
+        shopping_list_data, warning = _generate_shopping_list_with_ai(compiled_data)
     except Exception as e:
-        logger.error(f"Error generating shopping list: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Błąd podczas generowania listy: {str(e)}",
-        )
+        logger.error(f"Unexpected AI shopping generator error: {str(e)}", exc_info=True)
+        warning = "Tryb awaryjny: nie udalo sie uruchomic AI."
+
+    if not shopping_list_data:
+        generation_mode = "fallback"
+        shopping_list_data = _generate_shopping_list_fallback(compiled_data)
+        if not warning:
+            warning = "Lista wygenerowana bez AI. Sprawdz ilosci."
+
+    response = ShoppingListResponse(
+        shopping_list=shopping_list_data,
+        total_recipes=len(compiled_data),
+        generated_at=datetime.datetime.utcnow(),
+        generation_mode=generation_mode,
+        warning=warning if generation_mode == "fallback" else None,
+    )
+
+    logger.info(
+        "Generated shopping list with %s categories (mode=%s)",
+        len(response.shopping_list),
+        generation_mode,
+    )
+    return response
 
 
 # --- STATYSTYKI ---

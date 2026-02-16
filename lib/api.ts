@@ -223,6 +223,15 @@ export interface ShoppingListResponse {
   shopping_list: ShoppingCategory[]
   total_recipes: number
   generated_at: string
+  generation_mode?: 'ai' | 'fallback'
+  warning?: string | null
+}
+
+export interface ShoppingListResult {
+  shoppingList: ShoppingList
+  generationMode: 'ai' | 'fallback'
+  warning: string | null
+  generatedAt: string
 }
 
 const parseShoppingItem = (item: string): ShoppingItem => {
@@ -309,7 +318,7 @@ export async function parseRecipe(url: string): Promise<Recipe> {
 export async function generateShoppingList(
   recipeIds: number[],
   servings: Record<number, number>
-): Promise<ShoppingList> {
+): Promise<ShoppingListResult> {
   const response = await apiFetch('/api/planner/generate', {
     method: 'POST',
     body: JSON.stringify({
@@ -324,7 +333,12 @@ export async function generateShoppingList(
     throw new Error(data?.detail || 'Failed to generate shopping list')
   }
   const data = (await response.json()) as ShoppingListResponse
-  return normalizeShoppingList(data)
+  return {
+    shoppingList: normalizeShoppingList(data),
+    generationMode: data.generation_mode === 'fallback' ? 'fallback' : 'ai',
+    warning: data.warning ?? null,
+    generatedAt: data.generated_at,
+  }
 }
 
 export async function fetchGoogleStatus(): Promise<GoogleStatus> {
