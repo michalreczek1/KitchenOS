@@ -70,6 +70,8 @@ class RecipeDB(Base):
     nutrition_calories_kcal = Column(Float, nullable=True)
     nutrition_source = Column(String, nullable=True)
     nutrition_confidence_score = Column(Float, nullable=True)
+    nutrition_failure_reason = Column(String, nullable=True)
+    nutrition_generation_mode = Column(String, nullable=True)
 
 
 class RecipeRatingDB(Base):

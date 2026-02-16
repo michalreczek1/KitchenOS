@@ -99,8 +99,10 @@ export interface Recipe {
   nutrition_fiber_g?: number | null
   nutrition_glycemic_load?: number | null
   nutrition_calories_kcal?: number | null
-  nutrition_source?: 'page_100g' | 'ai' | 'mixed' | null
+  nutrition_source?: 'page_100g' | 'ai' | 'mixed' | 'fallback' | 'mixed_fallback' | null
   nutrition_confidence_score?: number | null
+  nutrition_failure_reason?: string | null
+  nutrition_generation_mode?: 'ai' | 'fallback' | 'mixed' | null
   category?: RecipeCategory
   rating?: number
   created_at?: string
@@ -290,6 +292,17 @@ export async function fetchRecipeDetails(id: number): Promise<RecipeDetails> {
   const response = await apiFetch(`/api/recipes/${id}`)
   if (!response.ok) {
     throw new Error('Failed to fetch recipe details')
+  }
+  return response.json()
+}
+
+export async function recalculateRecipeNutrition(id: number): Promise<RecipeDetails> {
+  const response = await apiFetch(`/api/recipes/${id}/nutrition/recalculate`, {
+    method: 'POST',
+  })
+  if (!response.ok) {
+    const data = await response.json().catch(() => null)
+    throw new Error(data?.detail || 'Failed to recalculate recipe nutrition')
   }
   return response.json()
 }

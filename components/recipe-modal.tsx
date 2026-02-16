@@ -2,9 +2,10 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { X, Clock, Users, ExternalLink, UtensilsCrossed, Loader2, PenLine, Info } from 'lucide-react'
-import { fetchRecipeDetails, RECIPE_CATEGORIES, type RecipeCategory, type RecipeDetails } from '@/lib/api'
+import { fetchRecipeDetails, recalculateRecipeNutrition, RECIPE_CATEGORIES, type RecipeCategory, type RecipeDetails } from '@/lib/api'
 import { categoryStyles } from '@/lib/recipe-category-styles'
 import { getCustomRecipeCategoryMap, saveCustomRecipeCategory } from '@/lib/custom-recipe-categories'
+import { useToast } from '@/components/toast-provider'
 
 interface RecipeModalProps {
   recipeId: number | null
@@ -138,8 +139,10 @@ const normalizeKeywordText = (value?: string | null) =>
     .replace(/[\u0300-\u036f]/g, '')
 
 export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
+  const { showToast } = useToast()
   const [recipe, setRecipe] = useState<RecipeDetails | null>(null)
   const [isLoading, setIsLoading] = useState(false)
+  const [isRecalculatingNutrition, setIsRecalculatingNutrition] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [activeCategory, setActiveCategory] = useState<RecipeCategory>('inne')
   const [showNutritionInfo, setShowNutritionInfo] = useState(false)
@@ -174,6 +177,10 @@ export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
   const sourceLabel =
     recipe?.nutrition_source === 'page_100g'
       ? 'dane strony (W 100 g)'
+      : recipe?.nutrition_source === 'mixed_fallback'
+        ? 'mieszane + fallback'
+        : recipe?.nutrition_source === 'fallback'
+          ? 'fallback deterministyczny'
       : recipe?.nutrition_source === 'mixed'
         ? 'źródło mieszane'
         : recipe?.nutrition_source === 'ai'
@@ -327,6 +334,21 @@ export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
     return () => document.removeEventListener('keydown', handleEscape)
   }, [onClose])
 
+  const handleRecalculateNutrition = async () => {
+    if (!recipe?.id || isRecalculatingNutrition) return
+    setIsRecalculatingNutrition(true)
+    try {
+      const recalculated = await recalculateRecipeNutrition(recipe.id)
+      setRecipe(recalculated)
+      showToast('Wartości odżywcze przeliczone', 'success')
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Nie udało się przeliczyć wartości odżywczych'
+      showToast(message, 'error')
+    } finally {
+      setIsRecalculatingNutrition(false)
+    }
+  }
+
   if (!recipeId) return null
 
   return (
@@ -450,7 +472,9 @@ export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
                       </div>
                     )}
                     <p className="mt-2 text-muted-foreground">{planSentence}</p>
-                    {!autoPortionMessage && <p className="mt-1 text-muted-foreground">{nutritionBasisSentence}</p>}
+                    {!autoPortionMessage && hasAnyNutrition && (
+                      <p className="mt-1 text-muted-foreground">{nutritionBasisSentence}</p>
+                    )}
                     {hasAnyNutrition ? (
                       <ul className={`mt-3 text-muted-foreground ${denseNutritionLayout ? 'space-y-1.5' : 'space-y-2'}`}>
                         {nutritionRows.map((row) => (
@@ -463,7 +487,18 @@ export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
                         ))}
                       </ul>
                     ) : (
-                      <p className="mt-2 text-muted-foreground">Wartości odżywcze niedostępne dla tego przepisu.</p>
+                      <div className="mt-2 space-y-2">
+                        <p className="text-muted-foreground">Wartości odżywcze niedostępne dla tego przepisu.</p>
+                        <button
+                          type="button"
+                          onClick={handleRecalculateNutrition}
+                          disabled={isRecalculatingNutrition}
+                          className="inline-flex items-center gap-2 rounded-md border border-border bg-card px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {isRecalculatingNutrition ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                          Przelicz wartości odżywcze
+                        </button>
+                      </div>
                     )}
                   </div>
                 </div>

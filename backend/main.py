@@ -481,8 +481,10 @@ class RecipeResponse(BaseModel):
     nutrition_fiber_g: Optional[float] = None
     nutrition_glycemic_load: Optional[float] = None
     nutrition_calories_kcal: Optional[float] = None
-    nutrition_source: Optional[Literal["page_100g", "ai", "mixed"]] = None
+    nutrition_source: Optional[Literal["page_100g", "ai", "mixed", "fallback", "mixed_fallback"]] = None
     nutrition_confidence_score: Optional[float] = None
+    nutrition_failure_reason: Optional[str] = None
+    nutrition_generation_mode: Optional[Literal["ai", "fallback", "mixed"]] = None
     created_at: datetime.datetime
     ingredients: List[str] = []
     instructions: Optional[str] = None
@@ -655,6 +657,39 @@ HYDRATE_MULTIPLIERS = {
     "grain": 2.7,
     "pasta": 2.4,
     "legume": 2.6,
+}
+NUTRITION_SOURCE_VALUES = (
+    "page_100g",
+    "ai",
+    "mixed",
+    "fallback",
+    "mixed_fallback",
+)
+NUTRITION_FAILURE_CODES = (
+    "ai_exception",
+    "ai_invalid_payload",
+    "guardrail_macro_mass",
+    "guardrail_atwater",
+    "fallback_used",
+    "fallback_low_coverage",
+    "fallback_guardrail",
+    "empty_merge",
+)
+FALLBACK_NUTRIENTS_PER_100G = {
+    "flour": {"calories_kcal": 364.0, "protein_g": 10.0, "carbs_g": 76.0, "fat_g": 1.0, "fiber_g": 2.7},
+    "sugar": {"calories_kcal": 400.0, "protein_g": 0.0, "carbs_g": 100.0, "fat_g": 0.0, "fiber_g": 0.0},
+    "egg": {"calories_kcal": 143.0, "protein_g": 12.6, "carbs_g": 1.1, "fat_g": 9.5, "fiber_g": 0.0},
+    "milk": {"calories_kcal": 61.0, "protein_g": 3.2, "carbs_g": 4.8, "fat_g": 3.3, "fiber_g": 0.0},
+    "yogurt": {"calories_kcal": 62.0, "protein_g": 3.5, "carbs_g": 4.7, "fat_g": 3.4, "fiber_g": 0.0},
+    "cream": {"calories_kcal": 292.0, "protein_g": 2.0, "carbs_g": 3.0, "fat_g": 30.0, "fiber_g": 0.0},
+    "oil": {"calories_kcal": 884.0, "protein_g": 0.0, "carbs_g": 0.0, "fat_g": 100.0, "fiber_g": 0.0},
+    "butter": {"calories_kcal": 717.0, "protein_g": 0.9, "carbs_g": 0.1, "fat_g": 81.0, "fiber_g": 0.0},
+    "dry_pasta": {"calories_kcal": 360.0, "protein_g": 13.0, "carbs_g": 74.0, "fat_g": 1.5, "fiber_g": 3.0},
+    "dry_grain": {"calories_kcal": 360.0, "protein_g": 7.0, "carbs_g": 78.0, "fat_g": 1.0, "fiber_g": 2.0},
+    "dry_legume": {"calories_kcal": 340.0, "protein_g": 23.0, "carbs_g": 60.0, "fat_g": 1.5, "fiber_g": 16.0},
+    "fruit_puree": {"calories_kcal": 60.0, "protein_g": 0.6, "carbs_g": 15.0, "fat_g": 0.2, "fiber_g": 1.5},
+    "meat": {"calories_kcal": 180.0, "protein_g": 24.0, "carbs_g": 0.0, "fat_g": 9.0, "fiber_g": 0.0},
+    "vegetable": {"calories_kcal": 40.0, "protein_g": 2.0, "carbs_g": 8.0, "fat_g": 0.3, "fiber_g": 2.0},
 }
 LOW_CONFIDENCE_TERMS = (
     "dowolna ilosc",
@@ -1986,11 +2021,11 @@ def estimate_nutrition_with_ai(
     instructions: List[str],
     base_portions: int,
     portion_weight_g: Optional[float],
-) -> Optional[dict]:
+) -> tuple[Optional[dict], Optional[str]]:
     if client is None:
-        return None
+        return None, "ai_exception"
     if not ingredients:
-        return None
+        return None, "ai_invalid_payload"
 
     portions = max(1, int(base_portions or 1))
     prompt = "\n".join(
@@ -2034,11 +2069,11 @@ def estimate_nutrition_with_ai(
         parsed = _parse_nutrition_payload(parsed_raw)
         if not parsed:
             logger.warning("Nutrition request returned invalid payload")
-            return None
-        return parsed
+            return None, "ai_invalid_payload"
+        return parsed, None
     except Exception as exc:
         logger.warning("Nutrition request failed: %s", str(exc))
-        return None
+        return None, "ai_exception"
 
 
 def _estimate_glycemic_index(title: str, ingredients: List[str], instructions: List[str]) -> float:
@@ -2078,11 +2113,12 @@ def _contains_low_confidence_terms(ingredients: List[str], instructions: List[st
     return any(term in text_blob for term in LOW_CONFIDENCE_TERMS)
 
 
-def _apply_nutrition_guardrails(
-    nutrition: Optional[dict], portion_weight_g: Optional[float]
-) -> Optional[dict]:
+def _apply_nutrition_guardrails_with_reason(
+    nutrition: Optional[dict],
+    portion_weight_g: Optional[float],
+) -> tuple[Optional[dict], Optional[str]]:
     if not nutrition:
-        return None
+        return None, "empty_merge"
 
     protein = _coerce_nutrition_number(nutrition.get("protein_g")) or 0.0
     carbs = _coerce_nutrition_number(nutrition.get("carbs_g")) or 0.0
@@ -2103,7 +2139,7 @@ def _apply_nutrition_guardrails(
     if portion_weight_g and portion_weight_g > 0:
         macro_mass = protein + carbs + fat + fiber
         if macro_mass > portion_weight_g * 1.05:
-            return None
+            return None, "guardrail_macro_mass"
 
     # Guardrail: Atwater consistency when calories and fat are available.
     if calories is not None and fat > 0:
@@ -2111,7 +2147,7 @@ def _apply_nutrition_guardrails(
         if atwater > 0:
             rel_diff = abs(calories - atwater) / atwater
             if rel_diff > 0.55:
-                return None
+                return None, "guardrail_atwater"
 
     return {
         "protein_g": round(protein, 1),
@@ -2120,7 +2156,17 @@ def _apply_nutrition_guardrails(
         "fiber_g": round(fiber, 1),
         "glycemic_load": round(glycemic_load, 1) if glycemic_load is not None else None,
         "calories_kcal": calories,
-    }
+    }, None
+
+
+def _apply_nutrition_guardrails(
+    nutrition: Optional[dict], portion_weight_g: Optional[float]
+) -> Optional[dict]:
+    guarded, _ = _apply_nutrition_guardrails_with_reason(
+        nutrition=nutrition,
+        portion_weight_g=portion_weight_g,
+    )
+    return guarded
 
 
 def _compute_nutrition_confidence_score(
@@ -2139,6 +2185,10 @@ def _compute_nutrition_confidence_score(
         base_score = 70.0
     elif nutrition_source == "ai":
         base_score = 35.0
+    elif nutrition_source == "mixed_fallback":
+        base_score = 60.0
+    elif nutrition_source == "fallback":
+        base_score = 45.0
 
     if _contains_low_confidence_terms(ingredients, instructions):
         base_score -= 30.0
@@ -2363,11 +2413,167 @@ def merge_nutrition_sources(
     return merged, source
 
 
+def _fallback_profile_nutrients(profile: str) -> dict:
+    if profile == "dessert_dense":
+        return {"calories_kcal": 165.0, "protein_g": 3.0, "carbs_g": 16.0, "fat_g": 9.0, "fiber_g": 1.5}
+    if profile == "dessert_baked":
+        return {"calories_kcal": 240.0, "protein_g": 5.0, "carbs_g": 31.0, "fat_g": 10.0, "fiber_g": 2.0}
+    if profile == "breakfast_sweet":
+        return {"calories_kcal": 290.0, "protein_g": 9.0, "carbs_g": 36.0, "fat_g": 10.0, "fiber_g": 2.0}
+    if profile == "soup":
+        return {"calories_kcal": 220.0, "protein_g": 10.0, "carbs_g": 20.0, "fat_g": 9.0, "fiber_g": 3.0}
+    if profile == "main":
+        return {"calories_kcal": 450.0, "protein_g": 24.0, "carbs_g": 40.0, "fat_g": 20.0, "fiber_g": 6.0}
+    return {"calories_kcal": 320.0, "protein_g": 14.0, "carbs_g": 32.0, "fat_g": 14.0, "fiber_g": 4.0}
+
+
+def _fallback_kind_for_ingredient(norm: str) -> str:
+    kind = _classify_ingredient_kind(norm)
+    if kind == "oil" and "maslo" in norm:
+        return "butter"
+    if kind in ("flour", "sugar", "egg", "milk", "yogurt", "cream", "oil", "butter", "dry_pasta", "dry_grain", "dry_legume", "fruit_puree"):
+        return kind
+    if any(token in norm for token in ("kurcz", "mieso", "wolow", "wieprz", "indyk", "kielbas", "boczek", "ryb")):
+        return "meat"
+    return "vegetable"
+
+
+def _estimate_nutrition_deterministic_fallback(
+    *,
+    title: str,
+    ingredients: List[str],
+    instructions: List[str],
+    base_portions: int,
+    portion_weight_g: Optional[float],
+    declared_category: Optional[RecipeCategoryValue],
+) -> tuple[Optional[dict], Optional[str], Optional[float], Optional[str], Optional[str]]:
+    portions = max(1, int(base_portions or 1))
+    totals = {"calories_kcal": 0.0, "protein_g": 0.0, "carbs_g": 0.0, "fat_g": 0.0, "fiber_g": 0.0}
+    covered_weight_g = 0.0
+    fallback_line_hits = 0
+    ingredient_lines = 0
+
+    for ingredient in ingredients:
+        norm = _normalize_text(ingredient)
+        if not norm:
+            continue
+        ingredient_lines += 1
+        kind = _fallback_kind_for_ingredient(norm)
+        per_100 = FALLBACK_NUTRIENTS_PER_100G.get(kind)
+        if not per_100:
+            continue
+
+        line_weight_g = 0.0
+        for number_raw, unit in re.findall(r"(\d+(?:[.,]\d+)?)\s*(kg|g|ml|l)\b", norm):
+            value = _parse_number_token(number_raw)
+            if value is None or value <= 0:
+                continue
+            if unit == "kg":
+                line_weight_g += value * 1000.0
+            elif unit == "g":
+                line_weight_g += value
+            elif unit == "l":
+                line_weight_g += value * 1000.0 * LIQUID_DENSITY_G_PER_ML.get(kind if kind in LIQUID_DENSITY_G_PER_ML else "water", 1.0)
+            else:
+                line_weight_g += value * LIQUID_DENSITY_G_PER_ML.get(kind if kind in LIQUID_DENSITY_G_PER_ML else "water", 1.0)
+
+        if line_weight_g <= 0:
+            for number_raw, unit in re.findall(
+                r"(\d+(?:[.,]\d+)?)\s*(szklank\w*|lyzeczk\w*|lyzk\w*|szt\w*|jaj\w*)",
+                norm,
+            ):
+                value = _parse_number_token(number_raw)
+                if value is None or value <= 0:
+                    continue
+                inferred = _get_household_mass_g(_classify_ingredient_kind(norm), unit, value, norm)
+                if inferred:
+                    line_weight_g += inferred
+
+        if line_weight_g <= 0 and "jaj" in norm:
+            eggs_match = re.search(r"(\d+(?:[.,]\d+)?)\s*(?:szt|sztuk|jaj\w*)", norm)
+            if eggs_match:
+                value = _parse_number_token(eggs_match.group(1))
+                if value and value > 0:
+                    line_weight_g = value * HOUSEHOLD_CONVERSIONS_G["egg"]["default"]
+
+        if line_weight_g <= 0:
+            continue
+
+        factor = line_weight_g / 100.0
+        totals["calories_kcal"] += per_100["calories_kcal"] * factor
+        totals["protein_g"] += per_100["protein_g"] * factor
+        totals["carbs_g"] += per_100["carbs_g"] * factor
+        totals["fat_g"] += per_100["fat_g"] * factor
+        totals["fiber_g"] += per_100["fiber_g"] * factor
+        covered_weight_g += line_weight_g
+        fallback_line_hits += 1
+
+    coverage_ratio = (fallback_line_hits / ingredient_lines) if ingredient_lines > 0 else 0.0
+    low_coverage = coverage_ratio < 0.45 or fallback_line_hits < 2
+
+    if covered_weight_g <= 0:
+        profile = infer_portion_profile(
+            title=title,
+            ingredients=ingredients,
+            instructions=instructions,
+            declared_category=declared_category,
+        ).profile
+        base_profile = _fallback_profile_nutrients(profile)
+        nutrition = {
+            "calories_kcal": round(base_profile["calories_kcal"], 1),
+            "protein_g": round(base_profile["protein_g"], 1),
+            "carbs_g": round(base_profile["carbs_g"], 1),
+            "fat_g": round(base_profile["fat_g"], 1),
+            "fiber_g": round(base_profile["fiber_g"], 1),
+        }
+        nutrition["glycemic_load"] = _estimate_glycemic_load_fallback(
+            title=title,
+            ingredients=ingredients,
+            instructions=instructions,
+            carbs_g=nutrition.get("carbs_g"),
+            fiber_g=nutrition.get("fiber_g"),
+        )
+        guarded, guardrail_reason = _apply_nutrition_guardrails_with_reason(
+            nutrition=nutrition,
+            portion_weight_g=portion_weight_g,
+        )
+        if not guarded:
+            return None, None, None, "fallback_guardrail" if guardrail_reason else "fallback_used", "fallback"
+        return guarded, "fallback", 22.0, "fallback_low_coverage", "fallback"
+
+    nutrition_per_portion = {
+        "calories_kcal": round(totals["calories_kcal"] / portions, 1),
+        "protein_g": round(totals["protein_g"] / portions, 1),
+        "carbs_g": round(totals["carbs_g"] / portions, 1),
+        "fat_g": round(totals["fat_g"] / portions, 1),
+        "fiber_g": round(totals["fiber_g"] / portions, 1),
+    }
+    nutrition_per_portion["glycemic_load"] = _estimate_glycemic_load_fallback(
+        title=title,
+        ingredients=ingredients,
+        instructions=instructions,
+        carbs_g=nutrition_per_portion.get("carbs_g"),
+        fiber_g=nutrition_per_portion.get("fiber_g"),
+    )
+    guarded, guardrail_reason = _apply_nutrition_guardrails_with_reason(
+        nutrition=nutrition_per_portion,
+        portion_weight_g=portion_weight_g,
+    )
+    if not guarded:
+        return None, None, None, "fallback_guardrail" if guardrail_reason else "fallback_used", "fallback"
+
+    confidence = round(max(15.0, min(65.0, 30.0 + (coverage_ratio * 35.0))), 1)
+    failure_reason = "fallback_low_coverage" if low_coverage else "fallback_used"
+    return guarded, "fallback", confidence, failure_reason, "fallback"
+
+
 def apply_nutrition_to_recipe(
     recipe: RecipeDB,
     nutrition: Optional[dict],
     nutrition_source: Optional[str],
     nutrition_confidence_score: Optional[float],
+    nutrition_generation_mode: Optional[str] = None,
+    nutrition_failure_reason: Optional[str] = None,
 ) -> None:
     recipe.nutrition_protein_g = _coerce_nutrition_number((nutrition or {}).get("protein_g"))
     recipe.nutrition_carbs_g = _coerce_nutrition_number((nutrition or {}).get("carbs_g"))
@@ -2377,6 +2583,8 @@ def apply_nutrition_to_recipe(
     recipe.nutrition_calories_kcal = _coerce_nutrition_number((nutrition or {}).get("calories_kcal"))
     recipe.nutrition_source = nutrition_source
     recipe.nutrition_confidence_score = _coerce_nutrition_number(nutrition_confidence_score)
+    recipe.nutrition_generation_mode = nutrition_generation_mode
+    recipe.nutrition_failure_reason = nutrition_failure_reason
 
 
 def apply_portion_adjustment_to_recipe(
@@ -2400,14 +2608,14 @@ def apply_weight_estimation_to_recipe(
     recipe.final_weight_confidence = _coerce_nutrition_number(metadata.final_weight_confidence)
 
 
-def estimate_recipe_nutrition(
+def _estimate_recipe_nutrition_single_attempt(
     title: str,
     ingredients: List[str],
     instructions: List[str],
     base_portions: int,
     page_nutrition_per_100g: Optional[dict] = None,
     portion_weight_g: Optional[float] = None,
-) -> tuple[Optional[dict], Optional[str], Optional[float]]:
+) -> tuple[Optional[dict], Optional[str], Optional[float], Optional[str], Optional[str]]:
     page_nutrition_per_portion = convert_nutrition_per_100g_to_portion(
         page_nutrition_per_100g or {}, portion_weight_g
     )
@@ -2415,8 +2623,9 @@ def estimate_recipe_nutrition(
     needs_ai = any(key not in page_nutrition_per_portion for key in required_keys)
 
     ai_nutrition = None
+    ai_failure_reason = None
     if needs_ai:
-        ai_nutrition = estimate_nutrition_with_ai(
+        ai_nutrition, ai_failure_reason = estimate_nutrition_with_ai(
             title=title,
             ingredients=ingredients,
             instructions=instructions,
@@ -2426,7 +2635,8 @@ def estimate_recipe_nutrition(
 
     merged_nutrition, nutrition_source = merge_nutrition_sources(page_nutrition_per_portion, ai_nutrition)
     if not merged_nutrition:
-        return None, None, None
+        failure_reason = ai_failure_reason or "empty_merge"
+        return None, None, None, failure_reason, "ai"
 
     if _coerce_nutrition_number(merged_nutrition.get("glycemic_load")) is None:
         fallback_gl = _estimate_glycemic_load_fallback(
@@ -2443,9 +2653,13 @@ def estimate_recipe_nutrition(
             elif nutrition_source is None:
                 nutrition_source = "mixed"
 
-    guarded_nutrition = _apply_nutrition_guardrails(merged_nutrition, portion_weight_g)
+    guarded_nutrition, guardrail_reason = _apply_nutrition_guardrails_with_reason(
+        nutrition=merged_nutrition,
+        portion_weight_g=portion_weight_g,
+    )
     if not guarded_nutrition:
-        return None, None, None
+        failure_reason = guardrail_reason or ai_failure_reason or "empty_merge"
+        return None, None, None, failure_reason, "ai"
 
     confidence_score = _compute_nutrition_confidence_score(
         nutrition_source=nutrition_source,
@@ -2453,7 +2667,68 @@ def estimate_recipe_nutrition(
         instructions=instructions,
         portion_weight_g=portion_weight_g,
     )
-    return guarded_nutrition, nutrition_source, confidence_score
+    generation_mode = "mixed" if nutrition_source in {"page_100g", "mixed"} else "ai"
+    return guarded_nutrition, nutrition_source, confidence_score, None, generation_mode
+
+
+def estimate_recipe_nutrition(
+    title: str,
+    ingredients: List[str],
+    instructions: List[str],
+    base_portions: int,
+    page_nutrition_per_100g: Optional[dict] = None,
+    portion_weight_g: Optional[float] = None,
+    declared_category: Optional[RecipeCategoryValue] = None,
+) -> tuple[Optional[dict], Optional[str], Optional[float], Optional[str], Optional[str]]:
+    last_failure_reason: Optional[str] = None
+    for attempt in range(1, 4):
+        nutrition, nutrition_source, confidence_score, failure_reason, generation_mode = _estimate_recipe_nutrition_single_attempt(
+            title=title,
+            ingredients=ingredients,
+            instructions=instructions,
+            base_portions=base_portions,
+            page_nutrition_per_100g=page_nutrition_per_100g,
+            portion_weight_g=portion_weight_g,
+        )
+        if nutrition:
+            if attempt > 1:
+                logger.info(
+                    "Nutrition retry succeeded on attempt %s for recipe '%s'",
+                    attempt,
+                    title,
+                )
+            return nutrition, nutrition_source, confidence_score, None, generation_mode
+        last_failure_reason = failure_reason
+        logger.warning(
+            "Nutrition attempt %s failed for recipe '%s': %s",
+            attempt,
+            title,
+            failure_reason or "unknown",
+        )
+
+    fallback_nutrition, fallback_source, fallback_confidence, fallback_reason, fallback_mode = _estimate_nutrition_deterministic_fallback(
+        title=title,
+        ingredients=ingredients,
+        instructions=instructions,
+        base_portions=base_portions,
+        portion_weight_g=portion_weight_g,
+        declared_category=declared_category,
+    )
+    if fallback_nutrition:
+        logger.warning(
+            "Nutrition fallback used for recipe '%s' after failed AI attempts. reason=%s",
+            title,
+            fallback_reason or "fallback_used",
+        )
+        return (
+            fallback_nutrition,
+            fallback_source,
+            fallback_confidence,
+            fallback_reason or "fallback_used",
+            fallback_mode or "fallback",
+        )
+
+    return None, None, None, last_failure_reason or "fallback_used", "fallback"
 
 
 def fetch_html_safely(url: str, timeout: int = 10) -> str:
@@ -3082,13 +3357,20 @@ async def parse_and_save_recipe(
             scraper=scraper,
             html_content=html_content,
         )
-        nutrition_estimate, nutrition_source, nutrition_confidence_score = estimate_recipe_nutrition(
+        (
+            nutrition_estimate,
+            nutrition_source,
+            nutrition_confidence_score,
+            nutrition_failure_reason,
+            nutrition_generation_mode,
+        ) = estimate_recipe_nutrition(
             title=title,
             ingredients=ingredients,
             instructions=instructions_list,
             base_portions=base_portions,
             page_nutrition_per_100g=page_nutrition_per_100g,
             portion_weight_g=yield_context.portion_weight_g,
+            declared_category=declared_category,
         )
         portion_adjustment = _rebalance_portions_by_profile_if_needed(
             context=yield_context,
@@ -3099,13 +3381,20 @@ async def parse_and_save_recipe(
         )
         if portion_adjustment.adjusted:
             base_portions = max(1, int(yield_context.base_portions or base_portions))
-            nutrition_estimate, nutrition_source, nutrition_confidence_score = estimate_recipe_nutrition(
+            (
+                nutrition_estimate,
+                nutrition_source,
+                nutrition_confidence_score,
+                nutrition_failure_reason,
+                nutrition_generation_mode,
+            ) = estimate_recipe_nutrition(
                 title=title,
                 ingredients=ingredients,
                 instructions=instructions_list,
                 base_portions=base_portions,
                 page_nutrition_per_100g=page_nutrition_per_100g,
                 portion_weight_g=yield_context.portion_weight_g,
+                declared_category=declared_category,
             )
 
         # Sprawdź czy przepis już istnieje
@@ -3138,6 +3427,8 @@ async def parse_and_save_recipe(
                 nutrition_estimate,
                 nutrition_source,
                 nutrition_confidence_score,
+                nutrition_generation_mode,
+                nutrition_failure_reason,
             )
             recipe.image_url = image_url
             recipe.updated_at = datetime.datetime.utcnow()
@@ -3178,6 +3469,8 @@ async def parse_and_save_recipe(
                 nutrition_calories_kcal=_coerce_nutrition_number((nutrition_estimate or {}).get("calories_kcal")),
                 nutrition_source=nutrition_source,
                 nutrition_confidence_score=nutrition_confidence_score,
+                nutrition_generation_mode=nutrition_generation_mode,
+                nutrition_failure_reason=nutrition_failure_reason,
             )
             db.add(recipe)
 
@@ -3271,6 +3564,75 @@ async def get_recipe(
     )
     if rating:
         setattr(recipe, "rating", rating.rating)
+    return recipe
+
+
+@app.post(
+    "/api/recipes/{recipe_id}/nutrition/recalculate",
+    response_model=RecipeResponse,
+    tags=["Recipes"],
+)
+async def recalculate_recipe_nutrition(
+    recipe_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserDB = Depends(get_current_user),
+):
+    recipe = (
+        db.query(RecipeDB)
+        .filter(RecipeDB.id == recipe_id, RecipeDB.owner_id == current_user.id)
+        .first()
+    )
+    if not recipe:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Przepis o ID {recipe_id} nie został znaleziony",
+        )
+
+    instruction_list = _normalize_instruction_list(recipe.instructions or "")
+    page_nutrition_per_100g: Optional[dict] = None
+    recipe_url = (recipe.url or "").strip()
+    if recipe_url.startswith("http://") or recipe_url.startswith("https://"):
+        try:
+            html_content = fetch_html_safely(recipe_url)
+            scraper = get_scraper_by_host(recipe_url, html_content)
+            if scraper:
+                page_nutrition_per_100g = extract_nutrition_per_100g_from_page(
+                    scraper=scraper,
+                    html_content=html_content,
+                )
+        except Exception as exc:
+            logger.warning(
+                "Nutrition recalculate: page nutrition unavailable for recipe %s (%s)",
+                recipe_id,
+                str(exc),
+            )
+
+    (
+        nutrition_estimate,
+        nutrition_source,
+        nutrition_confidence_score,
+        nutrition_failure_reason,
+        nutrition_generation_mode,
+    ) = estimate_recipe_nutrition(
+        title=recipe.title,
+        ingredients=recipe.ingredients or [],
+        instructions=instruction_list,
+        base_portions=max(1, int(recipe.base_portions or 1)),
+        page_nutrition_per_100g=page_nutrition_per_100g,
+        portion_weight_g=recipe.portion_weight_g,
+        declared_category=recipe.declared_category,
+    )
+    apply_nutrition_to_recipe(
+        recipe,
+        nutrition_estimate,
+        nutrition_source,
+        nutrition_confidence_score,
+        nutrition_generation_mode,
+        nutrition_failure_reason,
+    )
+    recipe.updated_at = datetime.datetime.utcnow()
+    db.commit()
+    db.refresh(recipe)
     return recipe
 
 
@@ -4157,13 +4519,20 @@ ZWROT (tylko JSON):
         yield_context.declared_category = declared_category
         base_portions = max(1, int(yield_context.base_portions or 1))
         servings_unit = yield_context.servings_unit
-        nutrition_estimate, nutrition_source, nutrition_confidence_score = estimate_recipe_nutrition(
+        (
+            nutrition_estimate,
+            nutrition_source,
+            nutrition_confidence_score,
+            nutrition_failure_reason,
+            nutrition_generation_mode,
+        ) = estimate_recipe_nutrition(
             title=parsed_title,
             ingredients=parsed_ingredients,
             instructions=instructions_list,
             base_portions=base_portions,
             page_nutrition_per_100g=None,
             portion_weight_g=yield_context.portion_weight_g,
+            declared_category=declared_category,
         )
         portion_adjustment = _rebalance_portions_by_profile_if_needed(
             context=yield_context,
@@ -4174,13 +4543,20 @@ ZWROT (tylko JSON):
         )
         if portion_adjustment.adjusted:
             base_portions = max(1, int(yield_context.base_portions or base_portions))
-            nutrition_estimate, nutrition_source, nutrition_confidence_score = estimate_recipe_nutrition(
+            (
+                nutrition_estimate,
+                nutrition_source,
+                nutrition_confidence_score,
+                nutrition_failure_reason,
+                nutrition_generation_mode,
+            ) = estimate_recipe_nutrition(
                 title=parsed_title,
                 ingredients=parsed_ingredients,
                 instructions=instructions_list,
                 base_portions=base_portions,
                 page_nutrition_per_100g=None,
                 portion_weight_g=yield_context.portion_weight_g,
+                declared_category=declared_category,
             )
 
         # Ikona domyślna
@@ -4223,6 +4599,8 @@ ZWROT (tylko JSON):
             nutrition_calories_kcal=_coerce_nutrition_number((nutrition_estimate or {}).get("calories_kcal")),
             nutrition_source=nutrition_source,
             nutrition_confidence_score=nutrition_confidence_score,
+            nutrition_generation_mode=nutrition_generation_mode,
+            nutrition_failure_reason=nutrition_failure_reason,
         )
 
         db.add(recipe)
@@ -4504,13 +4882,20 @@ async def create_recipe(
     )
     yield_context.declared_category = declared_category
 
-    nutrition_estimate, nutrition_source, nutrition_confidence_score = estimate_recipe_nutrition(
+    (
+        nutrition_estimate,
+        nutrition_source,
+        nutrition_confidence_score,
+        nutrition_failure_reason,
+        nutrition_generation_mode,
+    ) = estimate_recipe_nutrition(
         title=title,
         ingredients=ingredients,
         instructions=instructions_list,
         base_portions=base_portions,
         page_nutrition_per_100g=None,
         portion_weight_g=yield_context.portion_weight_g,
+        declared_category=declared_category,
     )
     portion_adjustment = _rebalance_portions_by_profile_if_needed(
         context=yield_context,
@@ -4521,13 +4906,20 @@ async def create_recipe(
     )
     if portion_adjustment.adjusted:
         base_portions = max(1, int(yield_context.base_portions or base_portions))
-        nutrition_estimate, nutrition_source, nutrition_confidence_score = estimate_recipe_nutrition(
+        (
+            nutrition_estimate,
+            nutrition_source,
+            nutrition_confidence_score,
+            nutrition_failure_reason,
+            nutrition_generation_mode,
+        ) = estimate_recipe_nutrition(
             title=title,
             ingredients=ingredients,
             instructions=instructions_list,
             base_portions=base_portions,
             page_nutrition_per_100g=None,
             portion_weight_g=yield_context.portion_weight_g,
+            declared_category=declared_category,
         )
 
     generic_icon = "https://cdn-icons-png.flaticon.com/512/3081/3081557.png"
@@ -4565,6 +4957,8 @@ async def create_recipe(
         nutrition_calories_kcal=_coerce_nutrition_number((nutrition_estimate or {}).get("calories_kcal")),
         nutrition_source=nutrition_source,
         nutrition_confidence_score=nutrition_confidence_score,
+        nutrition_generation_mode=nutrition_generation_mode,
+        nutrition_failure_reason=nutrition_failure_reason,
     )
 
     db.add(recipe)
