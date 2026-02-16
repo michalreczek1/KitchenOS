@@ -78,6 +78,11 @@ export interface Recipe {
   servings_unit?: ServingsUnit
   yield_display_label?: string | null
   yield_assumption_reason?: string | null
+  portion_adjusted_auto?: boolean | null
+  portion_adjustment_code?: string | null
+  portion_profile?: 'soup' | 'main' | 'dessert_baked' | 'dessert_dense' | 'default' | null
+  target_portion_weight_g?: number | null
+  original_base_portions?: number | null
   total_weight_g?: number | null
   portion_weight_g?: number | null
   piece_weight_g?: number | null

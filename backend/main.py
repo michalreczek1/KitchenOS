@@ -1,5 +1,6 @@
 import os
 import re
+import math
 import requests
 import datetime
 import json
@@ -446,6 +447,11 @@ class RecipeResponse(BaseModel):
     servings_unit: Optional[str] = None
     yield_display_label: Optional[str] = None
     yield_assumption_reason: Optional[str] = None
+    portion_adjusted_auto: Optional[bool] = None
+    portion_adjustment_code: Optional[str] = None
+    portion_profile: Optional[Literal["soup", "main", "dessert_baked", "dessert_dense", "default"]] = None
+    target_portion_weight_g: Optional[float] = None
+    original_base_portions: Optional[int] = None
     total_weight_g: Optional[float] = None
     portion_weight_g: Optional[float] = None
     piece_weight_g: Optional[float] = None
@@ -541,6 +547,26 @@ class YieldContext:
     assumption_reason: Optional[str] = None
 
 
+@dataclass
+class PortionProfileResult:
+    profile: Literal["soup", "main", "dessert_baked", "dessert_dense", "default"] = "default"
+    confidence: float = 0.0
+    signals: List[str] = None
+
+    def __post_init__(self):
+        if self.signals is None:
+            self.signals = []
+
+
+@dataclass
+class PortionAdjustmentMetadata:
+    adjusted: bool = False
+    code: Optional[str] = None
+    profile: Optional[str] = None
+    target_portion_weight_g: Optional[float] = None
+    original_base_portions: Optional[int] = None
+
+
 PAN_DIAMETER_PORTION_TABLE = [
     (16.0, 18.0, 8),
     (20.0, 22.0, 10),
@@ -566,6 +592,13 @@ MEAL_MAX_KCAL_PER_PORTION = 900.0
 MEAL_MIN_PORTION_WEIGHT_G = 140.0
 GL_MAX_DISPLAY_VALUE = 50.0
 PLANNER_MAX_PORTIONS = 500
+PORTION_PROFILE_RULES = {
+    "soup": {"target_g": 350.0, "min_g": 220.0, "max_g": 500.0, "max_kcal": 700.0},
+    "main": {"target_g": 400.0, "min_g": 250.0, "max_g": 550.0, "max_kcal": 1200.0},
+    "dessert_baked": {"target_g": 120.0, "min_g": 80.0, "max_g": 180.0, "max_kcal": 700.0},
+    "dessert_dense": {"target_g": 35.0, "min_g": 25.0, "max_g": 60.0, "max_kcal": 350.0},
+    "default": {"target_g": 250.0, "min_g": 150.0, "max_g": 400.0, "max_kcal": 900.0},
+}
 LOW_CONFIDENCE_TERMS = (
     "dowolna ilosc",
     "dowolna ilość",
@@ -614,79 +647,103 @@ def _safe_portion_count(value: Optional[float], fallback: int = 1) -> int:
     return count
 
 
-def _detect_recipe_type(title: str, ingredients: List[str], instructions: List[str]) -> Literal["soup", "dessert", "main", "default"]:
+def _collect_recipe_tokens(title: str, ingredients: List[str], instructions: List[str]) -> tuple[set[str], str]:
     blob = _normalize_text(" ".join([title, " ".join(ingredients), " ".join(instructions)]))
+    tokens = set(re.findall(r"[a-z0-9]+", blob))
+    return tokens, blob
 
-    soup_keywords = ("zupa", "krem", "rosol", "barszcz", "bulion")
-    hearty_main_keywords = (
-        "fasol",
-        "kielbas",
-        "boczek",
-        "gulasz",
-        "bigos",
-        "leczo",
-        "grochow",
-        "ziemniak",
-        "zupa",
-    )
-    dessert_keywords = (
-        "tort",
-        "ciasto",
-        "deser",
-        "paczek",
-        "oponk",
-        "babeczk",
-        "muffin",
-        "sernik",
-        "slodk",
-        "karmel",
-        "migdal",
-        "czekolad",
-    )
-    main_keywords = ("obiad", "danie", "makaron", "kurczak", "mieso", "ryz", "ryba")
 
-    if any(keyword in blob for keyword in soup_keywords):
+def _score_prefix(tokens: set[str], profile_scores: dict, profile: str, prefix: str, weight: int, signal: str, signals: List[str]) -> None:
+    if any(token.startswith(prefix) for token in tokens):
+        profile_scores[profile] += weight
+        signals.append(signal)
+
+
+def infer_portion_profile(
+    title: str,
+    ingredients: List[str],
+    instructions: List[str],
+    yield_context: Optional[YieldContext] = None,
+) -> PortionProfileResult:
+    tokens, blob = _collect_recipe_tokens(title, ingredients, instructions)
+    scores = {
+        "soup": 0,
+        "main": 0,
+        "dessert_baked": 0,
+        "dessert_dense": 0,
+    }
+    signals: List[str] = []
+
+    soup_prefixes = ("zupa", "barszcz", "rosol", "bulion", "zurek", "chlodnik", "krupnik")
+    main_prefixes = (
+        "obiad", "danie", "fasol", "kielbas", "boczek", "gulasz", "bigos", "leczo",
+        "kurcz", "indyk", "mieso", "wieprz", "wolow", "ryba", "makaron", "lasagne",
+        "pizza", "zapiekank", "ryz", "kasz", "ziemniak",
+    )
+    dessert_baked_prefixes = (
+        "deser", "ciast", "tort", "szarlotk", "tarta", "babka", "piernik", "drozdz",
+        "muffin", "sernik", "beza", "kruche", "strudel",
+    )
+    dessert_dense_prefixes = ("karmel", "migdal", "orzech", "baton", "kulk", "cukierk", "pral")
+    sweet_prefixes = ("cukier", "miod", "syrop", "czekolad", "kakao", "dzem", "slod")
+
+    for prefix in soup_prefixes:
+        _score_prefix(tokens, scores, "soup", prefix, 3, f"soup:{prefix}", signals)
+    for prefix in main_prefixes:
+        _score_prefix(tokens, scores, "main", prefix, 2, f"main:{prefix}", signals)
+    for prefix in dessert_baked_prefixes:
+        _score_prefix(tokens, scores, "dessert_baked", prefix, 3, f"dessert_baked:{prefix}", signals)
+    for prefix in dessert_dense_prefixes:
+        _score_prefix(tokens, scores, "dessert_dense", prefix, 3, f"dessert_dense:{prefix}", signals)
+
+    if any(any(token.startswith(prefix) for token in tokens) for prefix in sweet_prefixes):
+        scores["dessert_baked"] += 1
+        scores["dessert_dense"] += 1
+        signals.append("dessert:sweetness")
+
+    if "zupa krem" in blob:
+        scores["soup"] += 4
+        signals.append("soup:phrase:zupa_krem")
+
+    if any(token.startswith("kremowk") for token in tokens):
+        scores["soup"] = max(0, scores["soup"] - 4)
+        scores["dessert_baked"] += 1
+        signals.append("negate_soup:kremowka")
+
+    if yield_context and yield_context.mode == "pan_size":
+        scores["dessert_baked"] += 2
+        signals.append("dessert_baked:pan_size")
+
+    if any(token.startswith("przekask") or token.startswith("snack") for token in tokens):
+        scores["dessert_dense"] += 2
+        signals.append("dessert_dense:snack_token")
+
+    profile_order = ["soup", "main", "dessert_baked", "dessert_dense"]
+    ranked = sorted(profile_order, key=lambda key: (scores[key], -profile_order.index(key)), reverse=True)
+    best = ranked[0]
+    best_score = scores[best]
+    second_score = scores[ranked[1]] if len(ranked) > 1 else 0
+
+    if best_score <= 0:
+        return PortionProfileResult(profile="default", confidence=0.2, signals=signals)
+
+    confidence = 0.5 + min(0.45, max(0.0, (best_score - second_score) * 0.1))
+    return PortionProfileResult(profile=best, confidence=round(confidence, 2), signals=signals)
+
+
+def _detect_recipe_type(title: str, ingredients: List[str], instructions: List[str]) -> Literal["soup", "dessert", "main", "default"]:
+    profile = infer_portion_profile(title, ingredients, instructions).profile
+    if profile == "soup":
         return "soup"
-    if any(keyword in blob for keyword in hearty_main_keywords):
+    if profile == "main":
         return "main"
-    if any(keyword in blob for keyword in dessert_keywords):
+    if profile in ("dessert_baked", "dessert_dense"):
         return "dessert"
-    if any(keyword in blob for keyword in main_keywords):
-        return "main"
     return "default"
 
 
 def _is_snack_like_recipe(title: str, ingredients: List[str], instructions: List[str]) -> bool:
-    blob = _normalize_text(" ".join([title, " ".join(ingredients), " ".join(instructions)]))
-    snack_keywords = (
-        "przekask",
-        "snack",
-        "baton",
-        "kulk",
-        "orzech",
-        "migdal",
-        "karmel",
-        "cukierki",
-        "ciasteczk",
-    )
-    meal_keywords = (
-        "zupa",
-        "fasol",
-        "kielbas",
-        "boczek",
-        "gulasz",
-        "bigos",
-        "obiad",
-        "danie",
-        "kurczak",
-        "mieso",
-        "ziemniak",
-        "makaron",
-        "ryz",
-    )
-    has_snack = any(keyword in blob for keyword in snack_keywords)
-    has_meal = any(keyword in blob for keyword in meal_keywords)
-    return has_snack and not has_meal
+    return infer_portion_profile(title, ingredients, instructions).profile == "dessert_dense"
 
 
 def _is_sweet_snack_recipe(title: str, ingredients: List[str], instructions: List[str]) -> bool:
@@ -698,16 +755,15 @@ def _is_sweet_snack_recipe(title: str, ingredients: List[str], instructions: Lis
 
 
 def _get_snack_standard_portion_weight_g(title: str, ingredients: List[str], instructions: List[str]) -> float:
-    if _is_sweet_snack_recipe(title, ingredients, instructions):
+    if infer_portion_profile(title, ingredients, instructions).profile == "dessert_dense":
         return SNACK_PORTION_WEIGHT_G
     return GENERAL_DESSERT_PORTION_WEIGHT_G
 
 
 def _get_standard_portion_weight_g(title: str, ingredients: List[str], instructions: List[str]) -> float:
-    if _is_snack_like_recipe(title, ingredients, instructions):
-        return _get_snack_standard_portion_weight_g(title, ingredients, instructions)
-    recipe_type = _detect_recipe_type(title, ingredients, instructions)
-    return DEFAULT_PORTION_WEIGHT_BY_TYPE_G.get(recipe_type, DEFAULT_PORTION_WEIGHT_BY_TYPE_G["default"])
+    profile = infer_portion_profile(title, ingredients, instructions).profile
+    rules = PORTION_PROFILE_RULES.get(profile) or PORTION_PROFILE_RULES["default"]
+    return float(rules["target_g"])
 
 
 def _map_pan_size_to_portions(min_cm: float, max_cm: float) -> int:
@@ -1534,6 +1590,90 @@ def _compute_nutrition_confidence_score(
     return round(max(5.0, min(100.0, base_score)), 1)
 
 
+def _get_portion_profile_rules(profile: str) -> dict:
+    return PORTION_PROFILE_RULES.get(profile) or PORTION_PROFILE_RULES["default"]
+
+
+def _rebalance_portions_by_profile_if_needed(
+    *,
+    context: YieldContext,
+    title: str,
+    ingredients: List[str],
+    instructions: List[str],
+    nutrition_per_portion: Optional[dict],
+) -> PortionAdjustmentMetadata:
+    profile_result = infer_portion_profile(
+        title=title,
+        ingredients=ingredients,
+        instructions=instructions,
+        yield_context=context,
+    )
+    profile = profile_result.profile
+    rules = _get_portion_profile_rules(profile)
+    metadata = PortionAdjustmentMetadata(
+        adjusted=False,
+        code=None,
+        profile=profile,
+        target_portion_weight_g=float(rules["target_g"]),
+        original_base_portions=max(1, int(context.base_portions or 1)),
+    )
+
+    total_weight_g = context.total_weight_g
+    if total_weight_g is None or total_weight_g <= 0:
+        return metadata
+
+    current_portions = max(1, int(context.base_portions or 1))
+    current_portion_weight = total_weight_g / current_portions
+    calories = _coerce_nutrition_number((nutrition_per_portion or {}).get("calories_kcal"))
+
+    if context.mode == "explicit_pieces" and context.piece_weight_g:
+        piece_absurd = (
+            current_portion_weight > (float(rules["max_g"]) * 2.0)
+            or current_portion_weight < (float(rules["min_g"]) * 0.5)
+        )
+        if not piece_absurd:
+            return metadata
+
+    weight_out_of_range = (
+        current_portion_weight < float(rules["min_g"])
+        or current_portion_weight > float(rules["max_g"])
+    )
+    calories_out_of_range = (
+        calories is not None and calories > float(rules["max_kcal"])
+    )
+    if not (weight_out_of_range or calories_out_of_range):
+        return metadata
+
+    target_weight_g = float(rules["target_g"])
+    target_portions = max(1, int(round(total_weight_g / target_weight_g)))
+    target_portions = min(PLANNER_MAX_PORTIONS, target_portions)
+
+    if target_portions == current_portions:
+        if current_portion_weight > float(rules["max_g"]):
+            target_portions = min(PLANNER_MAX_PORTIONS, current_portions + 1)
+        elif current_portion_weight < float(rules["min_g"]) and current_portions > 1:
+            target_portions = max(1, current_portions - 1)
+
+    if target_portions == current_portions:
+        return metadata
+
+    context.base_portions = target_portions
+    context.portion_weight_g = round(total_weight_g / target_portions, 1)
+    context.mode = "total_weight_only"
+
+    code = "weight_out_of_range"
+    if calories_out_of_range:
+        code = "calories_out_of_range"
+    context.assumption_reason = (
+        f"Auto-adjusted [{code}] profile={profile} "
+        f"target~{target_weight_g:.0f} g ({current_portions}->{target_portions})"
+    )
+
+    metadata.adjusted = True
+    metadata.code = code
+    return metadata
+
+
 def _rebalance_portions_for_dense_snack_if_needed(
     *,
     context: YieldContext,
@@ -1665,6 +1805,17 @@ def apply_nutrition_to_recipe(
     recipe.nutrition_calories_kcal = _coerce_nutrition_number((nutrition or {}).get("calories_kcal"))
     recipe.nutrition_source = nutrition_source
     recipe.nutrition_confidence_score = _coerce_nutrition_number(nutrition_confidence_score)
+
+
+def apply_portion_adjustment_to_recipe(
+    recipe: RecipeDB,
+    metadata: PortionAdjustmentMetadata,
+) -> None:
+    recipe.portion_adjusted_auto = bool(metadata.adjusted)
+    recipe.portion_adjustment_code = metadata.code
+    recipe.portion_profile = metadata.profile
+    recipe.target_portion_weight_g = _coerce_nutrition_number(metadata.target_portion_weight_g)
+    recipe.original_base_portions = metadata.original_base_portions
 
 
 def estimate_recipe_nutrition(
@@ -2353,24 +2504,14 @@ async def parse_and_save_recipe(
             page_nutrition_per_100g=page_nutrition_per_100g,
             portion_weight_g=yield_context.portion_weight_g,
         )
-        rebalanced_portions = False
-        if _rebalance_portions_for_dense_snack_if_needed(
+        portion_adjustment = _rebalance_portions_by_profile_if_needed(
             context=yield_context,
             title=title,
             ingredients=ingredients,
             instructions=instructions_list,
             nutrition_per_portion=nutrition_estimate,
-        ):
-            rebalanced_portions = True
-        if _rebalance_portions_for_meal_if_needed(
-            context=yield_context,
-            title=title,
-            ingredients=ingredients,
-            instructions=instructions_list,
-            nutrition_per_portion=nutrition_estimate,
-        ):
-            rebalanced_portions = True
-        if rebalanced_portions:
+        )
+        if portion_adjustment.adjusted:
             base_portions = max(1, int(yield_context.base_portions or base_portions))
             nutrition_estimate, nutrition_source, nutrition_confidence_score = estimate_recipe_nutrition(
                 title=title,
@@ -2398,6 +2539,7 @@ async def parse_and_save_recipe(
             recipe.servings_unit = servings_unit
             recipe.yield_display_label = yield_context.yield_display_label
             recipe.yield_assumption_reason = yield_context.assumption_reason
+            apply_portion_adjustment_to_recipe(recipe, portion_adjustment)
             recipe.total_weight_g = yield_context.total_weight_g
             recipe.portion_weight_g = yield_context.portion_weight_g
             recipe.piece_weight_g = yield_context.piece_weight_g
@@ -2425,6 +2567,11 @@ async def parse_and_save_recipe(
                 servings_unit=servings_unit,
                 yield_display_label=yield_context.yield_display_label,
                 yield_assumption_reason=yield_context.assumption_reason,
+                portion_adjusted_auto=portion_adjustment.adjusted,
+                portion_adjustment_code=portion_adjustment.code,
+                portion_profile=portion_adjustment.profile,
+                target_portion_weight_g=portion_adjustment.target_portion_weight_g,
+                original_base_portions=portion_adjustment.original_base_portions,
                 total_weight_g=yield_context.total_weight_g,
                 portion_weight_g=yield_context.portion_weight_g,
                 piece_weight_g=yield_context.piece_weight_g,
@@ -3421,24 +3568,14 @@ ZWROT (tylko JSON):
             page_nutrition_per_100g=None,
             portion_weight_g=yield_context.portion_weight_g,
         )
-        rebalanced_portions = False
-        if _rebalance_portions_for_dense_snack_if_needed(
+        portion_adjustment = _rebalance_portions_by_profile_if_needed(
             context=yield_context,
             title=parsed_title,
             ingredients=parsed_ingredients,
             instructions=instructions_list,
             nutrition_per_portion=nutrition_estimate,
-        ):
-            rebalanced_portions = True
-        if _rebalance_portions_for_meal_if_needed(
-            context=yield_context,
-            title=parsed_title,
-            ingredients=parsed_ingredients,
-            instructions=instructions_list,
-            nutrition_per_portion=nutrition_estimate,
-        ):
-            rebalanced_portions = True
-        if rebalanced_portions:
+        )
+        if portion_adjustment.adjusted:
             base_portions = max(1, int(yield_context.base_portions or base_portions))
             nutrition_estimate, nutrition_source, nutrition_confidence_score = estimate_recipe_nutrition(
                 title=parsed_title,
@@ -3466,6 +3603,11 @@ ZWROT (tylko JSON):
             servings_unit=servings_unit,
             yield_display_label=yield_context.yield_display_label,
             yield_assumption_reason=yield_context.assumption_reason,
+            portion_adjusted_auto=portion_adjustment.adjusted,
+            portion_adjustment_code=portion_adjustment.code,
+            portion_profile=portion_adjustment.profile,
+            target_portion_weight_g=portion_adjustment.target_portion_weight_g,
+            original_base_portions=portion_adjustment.original_base_portions,
             total_weight_g=yield_context.total_weight_g,
             portion_weight_g=yield_context.portion_weight_g,
             piece_weight_g=yield_context.piece_weight_g,
@@ -3765,24 +3907,14 @@ async def create_recipe(
         page_nutrition_per_100g=None,
         portion_weight_g=yield_context.portion_weight_g,
     )
-    rebalanced_portions = False
-    if _rebalance_portions_for_dense_snack_if_needed(
+    portion_adjustment = _rebalance_portions_by_profile_if_needed(
         context=yield_context,
         title=title,
         ingredients=ingredients,
         instructions=instructions_list,
         nutrition_per_portion=nutrition_estimate,
-    ):
-        rebalanced_portions = True
-    if _rebalance_portions_for_meal_if_needed(
-        context=yield_context,
-        title=title,
-        ingredients=ingredients,
-        instructions=instructions_list,
-        nutrition_per_portion=nutrition_estimate,
-    ):
-        rebalanced_portions = True
-    if rebalanced_portions:
+    )
+    if portion_adjustment.adjusted:
         base_portions = max(1, int(yield_context.base_portions or base_portions))
         nutrition_estimate, nutrition_source, nutrition_confidence_score = estimate_recipe_nutrition(
             title=title,
@@ -3805,6 +3937,11 @@ async def create_recipe(
         servings_unit=servings_unit,
         yield_display_label=yield_context.yield_display_label,
         yield_assumption_reason=yield_context.assumption_reason,
+        portion_adjusted_auto=portion_adjustment.adjusted,
+        portion_adjustment_code=portion_adjustment.code,
+        portion_profile=portion_adjustment.profile,
+        target_portion_weight_g=portion_adjustment.target_portion_weight_g,
+        original_base_portions=portion_adjustment.original_base_portions,
         total_weight_g=yield_context.total_weight_g,
         portion_weight_g=yield_context.portion_weight_g,
         piece_weight_g=yield_context.piece_weight_g,
