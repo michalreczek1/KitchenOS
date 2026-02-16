@@ -560,6 +560,8 @@ SNACK_PORTION_WEIGHT_G = 30.0
 GENERAL_DESSERT_PORTION_WEIGHT_G = 40.0
 SNACK_TOTAL_WEIGHT_THRESHOLD_G = 500.0
 SNACK_MAX_KCAL_PER_PORTION = 800.0
+MEAL_MAX_KCAL_PER_PORTION = 900.0
+MEAL_MIN_PORTION_WEIGHT_G = 140.0
 GL_MAX_DISPLAY_VALUE = 50.0
 LOW_CONFIDENCE_TERMS = (
     "dowolna ilosc",
@@ -613,6 +615,17 @@ def _detect_recipe_type(title: str, ingredients: List[str], instructions: List[s
     blob = _normalize_text(" ".join([title, " ".join(ingredients), " ".join(instructions)]))
 
     soup_keywords = ("zupa", "krem", "rosol", "barszcz", "bulion")
+    hearty_main_keywords = (
+        "fasol",
+        "kielbas",
+        "boczek",
+        "gulasz",
+        "bigos",
+        "leczo",
+        "grochow",
+        "ziemniak",
+        "zupa",
+    )
     dessert_keywords = (
         "tort",
         "ciasto",
@@ -622,7 +635,6 @@ def _detect_recipe_type(title: str, ingredients: List[str], instructions: List[s
         "babeczk",
         "muffin",
         "sernik",
-        "przekask",
         "slodk",
         "karmel",
         "migdal",
@@ -632,6 +644,8 @@ def _detect_recipe_type(title: str, ingredients: List[str], instructions: List[s
 
     if any(keyword in blob for keyword in soup_keywords):
         return "soup"
+    if any(keyword in blob for keyword in hearty_main_keywords):
+        return "main"
     if any(keyword in blob for keyword in dessert_keywords):
         return "dessert"
     if any(keyword in blob for keyword in main_keywords):
@@ -652,7 +666,24 @@ def _is_snack_like_recipe(title: str, ingredients: List[str], instructions: List
         "cukierki",
         "ciasteczk",
     )
-    return any(keyword in blob for keyword in snack_keywords)
+    meal_keywords = (
+        "zupa",
+        "fasol",
+        "kielbas",
+        "boczek",
+        "gulasz",
+        "bigos",
+        "obiad",
+        "danie",
+        "kurczak",
+        "mieso",
+        "ziemniak",
+        "makaron",
+        "ryz",
+    )
+    has_snack = any(keyword in blob for keyword in snack_keywords)
+    has_meal = any(keyword in blob for keyword in meal_keywords)
+    return has_snack and not has_meal
 
 
 def _is_sweet_snack_recipe(title: str, ingredients: List[str], instructions: List[str]) -> bool:
@@ -1449,7 +1480,7 @@ def _apply_nutrition_guardrails(
     if glycemic_load is not None and net_carbs >= 0 and glycemic_load > net_carbs:
         glycemic_load = round(net_carbs, 1)
     if glycemic_load is not None and glycemic_load > GL_MAX_DISPLAY_VALUE:
-        glycemic_load = None
+        glycemic_load = round(GL_MAX_DISPLAY_VALUE, 1)
 
     # Guardrail: sum of macros cannot exceed portion mass by a meaningful margin.
     if portion_weight_g and portion_weight_g > 0:
@@ -1537,6 +1568,47 @@ def _rebalance_portions_for_dense_snack_if_needed(
     context.assumption_reason = (
         f"Auto-correction: {calories:.0f} kcal/portion too high, "
         f"set ~{standard_portion_g:.0f} g per portion ({target_portions} portions)"
+    )
+    return True
+
+
+def _rebalance_portions_for_meal_if_needed(
+    *,
+    context: YieldContext,
+    title: str,
+    ingredients: List[str],
+    instructions: List[str],
+    nutrition_per_portion: Optional[dict],
+) -> bool:
+    recipe_type = _detect_recipe_type(title, ingredients, instructions)
+    if recipe_type not in ("soup", "main"):
+        return False
+
+    total_weight_g = context.total_weight_g
+    if total_weight_g is None or total_weight_g <= 0:
+        return False
+
+    current_portions = max(1, int(context.base_portions or 1))
+    current_portion_weight = total_weight_g / current_portions
+    calories = _coerce_nutrition_number((nutrition_per_portion or {}).get("calories_kcal"))
+
+    standard_portion_g = DEFAULT_PORTION_WEIGHT_BY_TYPE_G.get(recipe_type, DEFAULT_PORTION_WEIGHT_BY_TYPE_G["main"])
+    oversized = current_portion_weight > (standard_portion_g * 1.6)
+    undersized = current_portions > 1 and current_portion_weight < MEAL_MIN_PORTION_WEIGHT_G
+    too_many_calories = calories is not None and calories > MEAL_MAX_KCAL_PER_PORTION
+
+    if not (oversized or undersized or too_many_calories):
+        return False
+
+    target_portions = max(1, round(total_weight_g / standard_portion_g))
+    if target_portions == current_portions:
+        return False
+
+    context.base_portions = target_portions
+    context.portion_weight_g = round(total_weight_g / target_portions, 1)
+    context.mode = "total_weight_only"
+    context.assumption_reason = (
+        f"Auto-correction meal: set ~{standard_portion_g:.0f} g per portion ({target_portions} portions)"
     )
     return True
 
@@ -2278,6 +2350,7 @@ async def parse_and_save_recipe(
             page_nutrition_per_100g=page_nutrition_per_100g,
             portion_weight_g=yield_context.portion_weight_g,
         )
+        rebalanced_portions = False
         if _rebalance_portions_for_dense_snack_if_needed(
             context=yield_context,
             title=title,
@@ -2285,6 +2358,16 @@ async def parse_and_save_recipe(
             instructions=instructions_list,
             nutrition_per_portion=nutrition_estimate,
         ):
+            rebalanced_portions = True
+        if _rebalance_portions_for_meal_if_needed(
+            context=yield_context,
+            title=title,
+            ingredients=ingredients,
+            instructions=instructions_list,
+            nutrition_per_portion=nutrition_estimate,
+        ):
+            rebalanced_portions = True
+        if rebalanced_portions:
             base_portions = max(1, int(yield_context.base_portions or base_portions))
             nutrition_estimate, nutrition_source, nutrition_confidence_score = estimate_recipe_nutrition(
                 title=title,
@@ -2833,6 +2916,7 @@ ZWROT (tylko JSON):
             page_nutrition_per_100g=None,
             portion_weight_g=yield_context.portion_weight_g,
         )
+        rebalanced_portions = False
         if _rebalance_portions_for_dense_snack_if_needed(
             context=yield_context,
             title=parsed_title,
@@ -2840,6 +2924,16 @@ ZWROT (tylko JSON):
             instructions=instructions_list,
             nutrition_per_portion=nutrition_estimate,
         ):
+            rebalanced_portions = True
+        if _rebalance_portions_for_meal_if_needed(
+            context=yield_context,
+            title=parsed_title,
+            ingredients=parsed_ingredients,
+            instructions=instructions_list,
+            nutrition_per_portion=nutrition_estimate,
+        ):
+            rebalanced_portions = True
+        if rebalanced_portions:
             base_portions = max(1, int(yield_context.base_portions or base_portions))
             nutrition_estimate, nutrition_source, nutrition_confidence_score = estimate_recipe_nutrition(
                 title=parsed_title,
@@ -3166,6 +3260,7 @@ async def create_recipe(
         page_nutrition_per_100g=None,
         portion_weight_g=yield_context.portion_weight_g,
     )
+    rebalanced_portions = False
     if _rebalance_portions_for_dense_snack_if_needed(
         context=yield_context,
         title=title,
@@ -3173,6 +3268,16 @@ async def create_recipe(
         instructions=instructions_list,
         nutrition_per_portion=nutrition_estimate,
     ):
+        rebalanced_portions = True
+    if _rebalance_portions_for_meal_if_needed(
+        context=yield_context,
+        title=title,
+        ingredients=ingredients,
+        instructions=instructions_list,
+        nutrition_per_portion=nutrition_estimate,
+    ):
+        rebalanced_portions = True
+    if rebalanced_portions:
         base_portions = max(1, int(yield_context.base_portions or base_portions))
         nutrition_estimate, nutrition_source, nutrition_confidence_score = estimate_recipe_nutrition(
             title=title,
