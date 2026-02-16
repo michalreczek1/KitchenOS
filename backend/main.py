@@ -2665,6 +2665,30 @@ SHOPPING_UNIT_MAP = {
     "kromki": "kromka",
 }
 
+SHOPPING_CATEGORY_CANONICAL_MAP = {
+    "warzywa i owoce": "Warzywa i owoce",
+    "warzywa": "Warzywa i owoce",
+    "owoce": "Warzywa i owoce",
+    "mieso i ryby": "Mieso i ryby",
+    "mieso": "Mieso i ryby",
+    "ryby": "Mieso i ryby",
+    "nabial i jaja": "Nabial i jaja",
+    "nabial": "Nabial i jaja",
+    "jaja": "Nabial i jaja",
+    "pieczywo i makarony": "Pieczywo i makarony",
+    "pieczywo": "Pieczywo i makarony",
+    "makarony": "Pieczywo i makarony",
+    "oleje i tluszcze": "Oleje i tluszcze",
+    "oleje": "Oleje i tluszcze",
+    "tluszcze": "Oleje i tluszcze",
+    "przyprawy i dodatki": "Przyprawy i dodatki",
+    "przyprawy": "Przyprawy i dodatki",
+    "dodatki": "Przyprawy i dodatki",
+    "produkty sypkie": "Produkty sypkie",
+    "sypkie": "Produkty sypkie",
+    "inne": "Inne",
+}
+
 
 def _format_float_compact(value: float, precision: int = 1) -> str:
     rounded = round(value, precision)
@@ -2879,6 +2903,13 @@ def _categorize_shopping_item(name: str) -> str:
     return "Inne"
 
 
+def _canonicalize_shopping_category(raw_category: str) -> Optional[str]:
+    normalized = _normalize_text(raw_category).strip()
+    if not normalized:
+        return None
+    return SHOPPING_CATEGORY_CANONICAL_MAP.get(normalized)
+
+
 def _validate_ai_shopping_list_payload(payload: Any) -> Optional[List[dict]]:
     if not isinstance(payload, dict):
         return None
@@ -2887,13 +2918,13 @@ def _validate_ai_shopping_list_payload(payload: Any) -> Optional[List[dict]]:
         return None
 
     validated_map: dict[str, List[str]] = {}
-    allowed_categories = set(SHOPPING_CATEGORIES_ORDER)
     for category_entry in raw_shopping_list:
         if not isinstance(category_entry, dict):
             continue
         category_name = str(category_entry.get("category") or "").strip()
+        canonical_category = _canonicalize_shopping_category(category_name)
         raw_items = category_entry.get("items")
-        if not category_name or not isinstance(raw_items, list):
+        if not isinstance(raw_items, list):
             continue
         items: List[str] = []
         for raw_item in raw_items:
@@ -2903,9 +2934,11 @@ def _validate_ai_shopping_list_payload(payload: Any) -> Optional[List[dict]]:
             if item:
                 items.append(item)
         if items:
-            if category_name not in allowed_categories:
-                category_name = "Inne"
-            validated_map.setdefault(category_name, []).extend(items)
+            for item in items:
+                target_category = canonical_category
+                if target_category in (None, "Inne"):
+                    target_category = _categorize_shopping_item(item)
+                validated_map.setdefault(target_category, []).append(item)
 
     if not validated_map:
         return None
