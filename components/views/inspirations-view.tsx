@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react'
 import { Sparkles, Clock, ChefHat, BookmarkPlus, RefreshCcw } from 'lucide-react'
 import { inspireRecipe, saveInspiredRecipe, type InspireRecipe, type Recipe } from '@/lib/api'
+import { inferRecipeCategory } from '@/lib/recipe-category-inference'
 import { useToast } from '@/components/toast-provider'
 import { Button } from '@/components/ui/button'
 
@@ -92,7 +93,12 @@ export function InspirationsView({ onRecipeSaved }: InspirationsViewProps) {
     if (!result) return
     setIsSaving(true)
     try {
-      const saved = await saveInspiredRecipe(result)
+      const inferredCategory = inferRecipeCategory({
+        title: result.title,
+        ingredients: result.ingredients.map((item) => `${item.item} ${item.amount ?? ''}`.trim()),
+        rawText: result.instructions.join(' '),
+      })
+      const saved = await saveInspiredRecipe(result, inferredCategory ?? undefined)
       onRecipeSaved(saved)
       showToast('Przepis zapisany w Twojej kolekcji', 'success')
     } catch (error) {

@@ -174,7 +174,7 @@ export function DashboardView({
                 }
                 setIsImporting(true)
                 try {
-                  const recipe = await parseRecipe(linkValue.trim())
+                  const recipe = await parseRecipe(linkValue.trim(), linkCategory)
                   const suggestedCategory = inferRecipeCategory({
                     title: recipe.title,
                     ingredients: Array.isArray((recipe as Recipe & { ingredients?: string[] }).ingredients)
@@ -258,7 +258,10 @@ export function DashboardView({
                 }
                 setIsSavingManual(true)
                 try {
-                  const recipe = await addManualRecipe({ content: manualText.trim() })
+                  const recipe = await addManualRecipe({
+                    content: manualText.trim(),
+                    declared_category: manualCategory,
+                  })
                   const suggestedCategory = inferRecipeCategory({ rawText: manualText.trim() })
                   const categoryToSave = manualCategoryTouched ? manualCategory : suggestedCategory ?? manualCategory
                   saveCustomRecipeCategory(recipe.id, categoryToSave)

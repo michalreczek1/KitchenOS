@@ -28,6 +28,17 @@ from fastapi.responses import Response, HTMLResponse, RedirectResponse
 from db import SessionLocal
 from models import UserDB, RecipeDB, RecipeRatingDB, PlanDB, ParseLogDB, GoogleCalendarDB
 
+RECIPE_CATEGORY_VALUES = (
+    "obiady",
+    "sniadania",
+    "lunchbox",
+    "salatki",
+    "pieczywo",
+    "desery",
+    "inne",
+)
+RecipeCategoryValue = Literal["obiady", "sniadania", "lunchbox", "salatki", "pieczywo", "desery", "inne"]
+
 
 # Load environment variables from .env file
 load_dotenv()
@@ -366,6 +377,7 @@ class RecipeCreateRequest(BaseModel):
     difficulty: Optional[str] = None
     base_portions: Optional[int] = 1
     servings_unit: Optional[Literal["servings", "people"]] = "servings"
+    declared_category: Optional[RecipeCategoryValue] = None
 
 
 class ChangePasswordRequest(BaseModel):
@@ -436,6 +448,7 @@ class GoogleSyncResponse(BaseModel):
 
 class RecipeInput(BaseModel):
     url: HttpUrl
+    declared_category: Optional[RecipeCategoryValue] = None
 
 
 class RecipeResponse(BaseModel):
@@ -445,11 +458,16 @@ class RecipeResponse(BaseModel):
     image_url: Optional[str] = None
     base_portions: int
     servings_unit: Optional[str] = None
+    declared_category: Optional[RecipeCategoryValue] = None
     yield_display_label: Optional[str] = None
     yield_assumption_reason: Optional[str] = None
     portion_adjusted_auto: Optional[bool] = None
     portion_adjustment_code: Optional[str] = None
-    portion_profile: Optional[Literal["soup", "main", "dessert_baked", "dessert_dense", "default"]] = None
+    portion_profile: Optional[Literal["soup", "main", "dessert_baked", "dessert_dense", "breakfast_sweet", "default"]] = None
+    process_class: Optional[Literal["batter", "hydrate", "roast", "reduce", "unknown"]] = None
+    raw_weight_g: Optional[float] = None
+    final_weight_estimation_source: Optional[Literal["deterministic", "ai", "mixed"]] = None
+    final_weight_confidence: Optional[float] = None
     target_portion_weight_g: Optional[float] = None
     original_base_portions: Optional[int] = None
     total_weight_g: Optional[float] = None
@@ -544,12 +562,24 @@ class YieldContext:
     piece_weight_g: Optional[float] = None
     pan_diameter_min_cm: Optional[float] = None
     pan_diameter_max_cm: Optional[float] = None
+    declared_category: Optional[RecipeCategoryValue] = None
     assumption_reason: Optional[str] = None
 
 
 @dataclass
 class PortionProfileResult:
-    profile: Literal["soup", "main", "dessert_baked", "dessert_dense", "default"] = "default"
+    profile: Literal["soup", "main", "dessert_baked", "dessert_dense", "breakfast_sweet", "default"] = "default"
+    confidence: float = 0.0
+    signals: List[str] = None
+
+    def __post_init__(self):
+        if self.signals is None:
+            self.signals = []
+
+
+@dataclass
+class ProcessClassResult:
+    process_class: Literal["batter", "hydrate", "roast", "reduce", "unknown"] = "unknown"
     confidence: float = 0.0
     signals: List[str] = None
 
@@ -567,6 +597,14 @@ class PortionAdjustmentMetadata:
     original_base_portions: Optional[int] = None
 
 
+@dataclass
+class WeightEstimationMetadata:
+    process_class: Optional[Literal["batter", "hydrate", "roast", "reduce", "unknown"]] = None
+    raw_weight_g: Optional[float] = None
+    final_weight_estimation_source: Optional[Literal["deterministic", "ai", "mixed"]] = None
+    final_weight_confidence: Optional[float] = None
+
+
 PAN_DIAMETER_PORTION_TABLE = [
     (16.0, 18.0, 8),
     (20.0, 22.0, 10),
@@ -577,12 +615,6 @@ DEFAULT_PAN_PORTIONS = 12
 RECTANGULAR_PAN_CM2_PER_PORTION = 70.0
 MIN_RECTANGULAR_PAN_PORTIONS = 4
 MAX_RECTANGULAR_PAN_PORTIONS = 20
-DEFAULT_PORTION_WEIGHT_BY_TYPE_G = {
-    "soup": 350.0,
-    "dessert": 120.0,
-    "main": 400.0,
-    "default": 250.0,
-}
 YIELD_NUMBER_LIMIT = 200
 SNACK_PORTION_WEIGHT_G = 30.0
 GENERAL_DESSERT_PORTION_WEIGHT_G = 40.0
@@ -595,9 +627,34 @@ PLANNER_MAX_PORTIONS = 500
 PORTION_PROFILE_RULES = {
     "soup": {"target_g": 350.0, "min_g": 220.0, "max_g": 500.0, "max_kcal": 700.0},
     "main": {"target_g": 400.0, "min_g": 250.0, "max_g": 550.0, "max_kcal": 1200.0},
+    "breakfast_sweet": {"target_g": 320.0, "min_g": 180.0, "max_g": 420.0, "max_kcal": 950.0},
     "dessert_baked": {"target_g": 120.0, "min_g": 80.0, "max_g": 180.0, "max_kcal": 700.0},
     "dessert_dense": {"target_g": 35.0, "min_g": 25.0, "max_g": 60.0, "max_kcal": 350.0},
     "default": {"target_g": 250.0, "min_g": 150.0, "max_g": 400.0, "max_kcal": 900.0},
+}
+HOUSEHOLD_UNIT_PATTERN = r"(szklank\w*|lyzk\w*|lyzeczk\w*|szt\w*|jaj\w*)"
+LIQUID_DENSITY_G_PER_ML = {
+    "water": 1.0,
+    "milk": 1.03,
+    "yogurt": 1.03,
+    "cream": 1.01,
+    "oil": 0.92,
+    "fruit_puree": 1.0,
+}
+HOUSEHOLD_CONVERSIONS_G = {
+    "glass": {"default": 250.0, "flour": 140.0, "sugar": 200.0},
+    "tbsp": {"default": 15.0, "flour": 10.0, "sugar": 12.0, "oil": 13.5, "butter": 14.0},
+    "tsp": {"default": 5.0, "flour": 3.0, "sugar": 4.0, "oil": 4.5, "butter": 4.5},
+    "egg": {"default": 60.0, "without_shell": 50.0},
+}
+PROCESS_CLASS_YIELD_FACTOR = {
+    "batter": 0.88,
+    "roast": 0.75,
+}
+HYDRATE_MULTIPLIERS = {
+    "grain": 2.7,
+    "pasta": 2.4,
+    "legume": 2.6,
 }
 LOW_CONFIDENCE_TERMS = (
     "dowolna ilosc",
@@ -625,6 +682,15 @@ def _normalize_text(value: Optional[str]) -> str:
     )
     normalized = unicodedata.normalize("NFKD", transliterated)
     return "".join(ch for ch in normalized if not unicodedata.combining(ch)).lower()
+
+
+def normalize_declared_category(value: Optional[str]) -> Optional[RecipeCategoryValue]:
+    if not value:
+        return None
+    normalized = _normalize_text(str(value)).strip()
+    if normalized in RECIPE_CATEGORY_VALUES:
+        return normalized  # type: ignore[return-value]
+    return None
 
 
 def _parse_number_token(value: str) -> Optional[float]:
@@ -664,11 +730,13 @@ def infer_portion_profile(
     ingredients: List[str],
     instructions: List[str],
     yield_context: Optional[YieldContext] = None,
+    declared_category: Optional[RecipeCategoryValue] = None,
 ) -> PortionProfileResult:
     tokens, blob = _collect_recipe_tokens(title, ingredients, instructions)
     scores = {
         "soup": 0,
         "main": 0,
+        "breakfast_sweet": 0,
         "dessert_baked": 0,
         "dessert_dense": 0,
     }
@@ -686,17 +754,22 @@ def infer_portion_profile(
     )
     dessert_dense_prefixes = ("karmel", "migdal", "orzech", "baton", "kulk", "cukierk", "pral")
     sweet_prefixes = ("cukier", "miod", "syrop", "czekolad", "kakao", "dzem", "slod")
+    breakfast_sweet_prefixes = ("nalesnik", "pancake", "gofr", "placus", "racuch", "omlet")
 
     for prefix in soup_prefixes:
         _score_prefix(tokens, scores, "soup", prefix, 3, f"soup:{prefix}", signals)
     for prefix in main_prefixes:
         _score_prefix(tokens, scores, "main", prefix, 2, f"main:{prefix}", signals)
+    for prefix in breakfast_sweet_prefixes:
+        _score_prefix(tokens, scores, "breakfast_sweet", prefix, 3, f"breakfast_sweet:{prefix}", signals)
     for prefix in dessert_baked_prefixes:
         _score_prefix(tokens, scores, "dessert_baked", prefix, 3, f"dessert_baked:{prefix}", signals)
     for prefix in dessert_dense_prefixes:
         _score_prefix(tokens, scores, "dessert_dense", prefix, 3, f"dessert_dense:{prefix}", signals)
 
-    if any(any(token.startswith(prefix) for token in tokens) for prefix in sweet_prefixes):
+    has_sweet_tokens = any(any(token.startswith(prefix) for token in tokens) for prefix in sweet_prefixes)
+    if has_sweet_tokens:
+        scores["breakfast_sweet"] += 2
         scores["dessert_baked"] += 1
         scores["dessert_dense"] += 1
         signals.append("dessert:sweetness")
@@ -714,11 +787,32 @@ def infer_portion_profile(
         scores["dessert_baked"] += 2
         signals.append("dessert_baked:pan_size")
 
+    if any(token.startswith("sniadan") or token.startswith("breakfast") for token in tokens):
+        scores["breakfast_sweet"] += 2
+        signals.append("breakfast:token")
+
     if any(token.startswith("przekask") or token.startswith("snack") for token in tokens):
         scores["dessert_dense"] += 2
         signals.append("dessert_dense:snack_token")
 
-    profile_order = ["soup", "main", "dessert_baked", "dessert_dense"]
+    if declared_category == "sniadania":
+        if has_sweet_tokens or scores["breakfast_sweet"] > 0:
+            scores["breakfast_sweet"] += 4
+            signals.append("declared:sniadania:sweet")
+        else:
+            scores["main"] += 4
+            signals.append("declared:sniadania:main")
+    elif declared_category == "desery":
+        scores["dessert_baked"] += 3
+        signals.append("declared:desery")
+    elif declared_category in ("obiady", "lunchbox"):
+        scores["main"] += 3
+        signals.append(f"declared:{declared_category}:main")
+    elif declared_category in ("salatki", "pieczywo"):
+        scores["main"] += 1
+        signals.append(f"declared:{declared_category}:hint")
+
+    profile_order = ["soup", "main", "breakfast_sweet", "dessert_baked", "dessert_dense"]
     ranked = sorted(profile_order, key=lambda key: (scores[key], -profile_order.index(key)), reverse=True)
     best = ranked[0]
     best_score = scores[best]
@@ -731,19 +825,34 @@ def infer_portion_profile(
     return PortionProfileResult(profile=best, confidence=round(confidence, 2), signals=signals)
 
 
-def _detect_recipe_type(title: str, ingredients: List[str], instructions: List[str]) -> Literal["soup", "dessert", "main", "default"]:
-    profile = infer_portion_profile(title, ingredients, instructions).profile
+def _detect_recipe_type(
+    title: str,
+    ingredients: List[str],
+    instructions: List[str],
+    declared_category: Optional[RecipeCategoryValue] = None,
+) -> Literal["soup", "dessert", "main", "default"]:
+    profile = infer_portion_profile(title, ingredients, instructions, declared_category=declared_category).profile
     if profile == "soup":
         return "soup"
-    if profile == "main":
+    if profile in ("main", "breakfast_sweet"):
         return "main"
     if profile in ("dessert_baked", "dessert_dense"):
         return "dessert"
     return "default"
 
 
-def _is_snack_like_recipe(title: str, ingredients: List[str], instructions: List[str]) -> bool:
-    return infer_portion_profile(title, ingredients, instructions).profile == "dessert_dense"
+def _is_snack_like_recipe(
+    title: str,
+    ingredients: List[str],
+    instructions: List[str],
+    declared_category: Optional[RecipeCategoryValue] = None,
+) -> bool:
+    return infer_portion_profile(
+        title,
+        ingredients,
+        instructions,
+        declared_category=declared_category,
+    ).profile == "dessert_dense"
 
 
 def _is_sweet_snack_recipe(title: str, ingredients: List[str], instructions: List[str]) -> bool:
@@ -754,14 +863,34 @@ def _is_sweet_snack_recipe(title: str, ingredients: List[str], instructions: Lis
     return (has_sweet_tokens and has_nut_tokens) and not has_meal_tokens
 
 
-def _get_snack_standard_portion_weight_g(title: str, ingredients: List[str], instructions: List[str]) -> float:
-    if infer_portion_profile(title, ingredients, instructions).profile == "dessert_dense":
+def _get_snack_standard_portion_weight_g(
+    title: str,
+    ingredients: List[str],
+    instructions: List[str],
+    declared_category: Optional[RecipeCategoryValue] = None,
+) -> float:
+    if infer_portion_profile(
+        title,
+        ingredients,
+        instructions,
+        declared_category=declared_category,
+    ).profile == "dessert_dense":
         return SNACK_PORTION_WEIGHT_G
     return GENERAL_DESSERT_PORTION_WEIGHT_G
 
 
-def _get_standard_portion_weight_g(title: str, ingredients: List[str], instructions: List[str]) -> float:
-    profile = infer_portion_profile(title, ingredients, instructions).profile
+def _get_standard_portion_weight_g(
+    title: str,
+    ingredients: List[str],
+    instructions: List[str],
+    declared_category: Optional[RecipeCategoryValue] = None,
+) -> float:
+    profile = infer_portion_profile(
+        title,
+        ingredients,
+        instructions,
+        declared_category=declared_category,
+    ).profile
     rules = PORTION_PROFILE_RULES.get(profile) or PORTION_PROFILE_RULES["default"]
     return float(rules["target_g"])
 
@@ -901,7 +1030,7 @@ def extract_yield_text_from_page(scraper: Any, html_content: str) -> str:
     return ""
 
 
-def _extract_ingredient_weight_breakdown(ingredients: List[str]) -> dict:
+def _extract_ingredient_weight_breakdown_legacy(ingredients: List[str]) -> dict:
     total_g = 0.0
     water_g = 0.0
     oil_g = 0.0
@@ -968,7 +1097,7 @@ def _adjust_weight_for_process(
     ingredients: List[str],
     instructions: List[str],
 ) -> tuple[float, List[str]]:
-    breakdown = _extract_ingredient_weight_breakdown(ingredients)
+    breakdown = _extract_ingredient_weight_breakdown_legacy(ingredients)
     process_tags = _infer_process_tags(title, ingredients, instructions)
     adjusted_weight = float(total_weight_g)
     assumptions: List[str] = []
@@ -994,16 +1123,327 @@ def _adjust_weight_for_process(
     return round(adjusted_weight, 1), assumptions
 
 
-def _estimate_total_weight_from_ingredients(ingredients: List[str]) -> Optional[float]:
-    breakdown = _extract_ingredient_weight_breakdown(ingredients)
+def _estimate_total_weight_from_ingredients_legacy(ingredients: List[str]) -> Optional[float]:
+    breakdown = _extract_ingredient_weight_breakdown_legacy(ingredients)
     total_g = breakdown["total_g"]
     if total_g <= 0:
         return None
     return round(total_g, 1)
 
 
+def _classify_ingredient_kind(norm: str) -> str:
+    if not norm:
+        return "other"
+    if "woda" in norm:
+        return "water"
+    if any(token in norm for token in ("mleko", "kefir", "napoj")):
+        return "milk"
+    if any(token in norm for token in ("jogurt", "maslank", "maslanka")):
+        return "yogurt"
+    if any(token in norm for token in ("smietan", "kremowk", "kremowka")):
+        return "cream"
+    if any(token in norm for token in ("olej", "oliwa", "smalec", "maslo klarowane", "maslo")):
+        return "oil"
+    if "maka" in norm:
+        return "flour"
+    if any(token in norm for token in ("cukier", "miod", "syrop")):
+        return "sugar"
+    if any(token in norm for token in ("makaron", "lasagn", "nudele", "spaghetti", "pappardelle", "fettuccine")):
+        return "dry_pasta"
+    if any(token in norm for token in ("ryz", "kasz", "kuskus", "bulgur", "quinoa")):
+        return "dry_grain"
+    if any(token in norm for token in ("fasol", "soczew", "ciecierzyc", "groch")) and "such" in norm:
+        return "dry_legume"
+    if "jaj" in norm:
+        return "egg"
+    if any(token in norm for token in ("mango", "mus", "pulpa", "puree", "przecier")):
+        return "fruit_puree"
+    return "other"
+
+
+def _get_household_mass_g(kind: str, unit: str, count: float, norm: str) -> Optional[float]:
+    if count <= 0:
+        return None
+    if unit.startswith("szklank"):
+        if kind == "flour":
+            return count * HOUSEHOLD_CONVERSIONS_G["glass"]["flour"]
+        if kind == "sugar":
+            return count * HOUSEHOLD_CONVERSIONS_G["glass"]["sugar"]
+        if kind == "oil":
+            return count * (HOUSEHOLD_CONVERSIONS_G["glass"]["default"] * LIQUID_DENSITY_G_PER_ML["oil"])
+        if kind in ("milk", "yogurt", "cream", "water", "fruit_puree"):
+            density = LIQUID_DENSITY_G_PER_ML.get(kind, 1.0)
+            return count * (HOUSEHOLD_CONVERSIONS_G["glass"]["default"] * density)
+        return count * HOUSEHOLD_CONVERSIONS_G["glass"]["default"]
+    if unit.startswith("lyzeczk"):
+        if kind == "flour":
+            return count * HOUSEHOLD_CONVERSIONS_G["tsp"]["flour"]
+        if kind == "sugar":
+            return count * HOUSEHOLD_CONVERSIONS_G["tsp"]["sugar"]
+        if kind == "oil":
+            return count * HOUSEHOLD_CONVERSIONS_G["tsp"]["oil"]
+        if kind in ("water", "milk", "yogurt", "cream", "fruit_puree"):
+            density = LIQUID_DENSITY_G_PER_ML.get(kind, 1.0)
+            return count * (5.0 * density)
+        return count * HOUSEHOLD_CONVERSIONS_G["tsp"]["default"]
+    if unit.startswith("lyzk"):
+        if kind == "flour":
+            return count * HOUSEHOLD_CONVERSIONS_G["tbsp"]["flour"]
+        if kind == "sugar":
+            return count * HOUSEHOLD_CONVERSIONS_G["tbsp"]["sugar"]
+        if kind == "oil":
+            return count * HOUSEHOLD_CONVERSIONS_G["tbsp"]["oil"]
+        if kind in ("water", "milk", "yogurt", "cream", "fruit_puree"):
+            density = LIQUID_DENSITY_G_PER_ML.get(kind, 1.0)
+            return count * (15.0 * density)
+        return count * HOUSEHOLD_CONVERSIONS_G["tbsp"]["default"]
+    if unit.startswith("szt") or unit.startswith("jaj"):
+        if kind == "egg":
+            without_shell = "bez skorup" in norm
+            return count * (
+                HOUSEHOLD_CONVERSIONS_G["egg"]["without_shell"]
+                if without_shell
+                else HOUSEHOLD_CONVERSIONS_G["egg"]["default"]
+            )
+        return None
+    return None
+
+
+def _extract_ingredient_weight_breakdown(ingredients: List[str]) -> dict:
+    total_g = 0.0
+    water_g = 0.0
+    solid_weight_g = 0.0
+    hydrate_grain_dry_g = 0.0
+    hydrate_pasta_dry_g = 0.0
+    hydrate_legume_dry_g = 0.0
+    assumptions: List[str] = []
+    confidence = 1.0
+
+    for ingredient in ingredients:
+        norm = _normalize_text(ingredient)
+        if not norm:
+            continue
+        kind = _classify_ingredient_kind(norm)
+        ingredient_weight_g = 0.0
+
+        unit_matches = re.findall(r"(\d+(?:[.,]\d+)?)\s*(kg|g|ml|l)\b", norm)
+        for number_raw, unit in unit_matches:
+            value = _parse_number_token(number_raw)
+            if value is None or value <= 0:
+                continue
+            if unit == "kg":
+                ingredient_weight_g += value * 1000.0
+            elif unit == "g":
+                ingredient_weight_g += value
+            elif unit == "l":
+                density = LIQUID_DENSITY_G_PER_ML.get(kind, 1.0)
+                ingredient_weight_g += value * 1000.0 * density
+            else:
+                density = LIQUID_DENSITY_G_PER_ML.get(kind, 1.0)
+                ingredient_weight_g += value * density
+
+        if ingredient_weight_g <= 0:
+            for number_raw, unit in re.findall(
+                r"(\d+(?:[.,]\d+)?)\s*(szklank\w*|lyzeczk\w*|lyzk\w*|szt\w*|jaj\w*)",
+                norm,
+            ):
+                value = _parse_number_token(number_raw)
+                if value is None:
+                    continue
+                inferred = _get_household_mass_g(kind, unit, value, norm)
+                if inferred is None:
+                    continue
+                ingredient_weight_g += inferred
+            if ingredient_weight_g > 0:
+                confidence = max(0.25, confidence - 0.08)
+                assumptions.append(f"Miary domowe: {ingredient}")
+
+        if ingredient_weight_g <= 0 and kind == "egg":
+            eggs_match = re.search(r"(\d+(?:[.,]\d+)?)\s*(?:szt|sztuk|jaj\w*)", norm)
+            if eggs_match:
+                value = _parse_number_token(eggs_match.group(1))
+                if value is not None and value > 0:
+                    ingredient_weight_g += value * HOUSEHOLD_CONVERSIONS_G["egg"]["default"]
+                    confidence = max(0.25, confidence - 0.06)
+                    assumptions.append(f"Domyslna masa jaj: {ingredient}")
+
+        if ingredient_weight_g <= 0:
+            continue
+
+        total_g += ingredient_weight_g
+        if kind == "water":
+            water_g += ingredient_weight_g
+        else:
+            solid_weight_g += ingredient_weight_g
+
+        if kind == "dry_grain":
+            hydrate_grain_dry_g += ingredient_weight_g
+        elif kind == "dry_pasta":
+            hydrate_pasta_dry_g += ingredient_weight_g
+        elif kind == "dry_legume":
+            hydrate_legume_dry_g += ingredient_weight_g
+
+    return {
+        "total_g": round(total_g, 1),
+        "solid_weight_g": round(solid_weight_g, 1),
+        "water_g": round(water_g, 1),
+        "hydrate_grain_dry_g": round(hydrate_grain_dry_g, 1),
+        "hydrate_pasta_dry_g": round(hydrate_pasta_dry_g, 1),
+        "hydrate_legume_dry_g": round(hydrate_legume_dry_g, 1),
+        "confidence": round(max(0.2, min(1.0, confidence)), 2),
+        "assumptions": assumptions,
+    }
+
+
+def infer_process_class(
+    title: str,
+    ingredients: List[str],
+    instructions: List[str],
+    declared_category: Optional[RecipeCategoryValue] = None,
+) -> ProcessClassResult:
+    tokens, blob = _collect_recipe_tokens(title, ingredients, instructions)
+    scores = {"batter": 0, "hydrate": 0, "roast": 0, "reduce": 0}
+    signals: List[str] = []
+
+    def _add_prefix_score(process: str, prefixes: tuple[str, ...], weight: int, marker: str) -> None:
+        for prefix in prefixes:
+            if any(token.startswith(prefix) for token in tokens):
+                scores[process] += weight
+                signals.append(f"{marker}:{prefix}")
+
+    _add_prefix_score("batter", ("nalesnik", "pancake", "gofr", "placus", "racuch", "omlet"), 3, "batter")
+    _add_prefix_score("hydrate", ("ryz", "kasz", "kuskus", "bulgur", "makaron", "soczew", "fasol"), 2, "hydrate")
+    _add_prefix_score("roast", ("piecze", "grill", "stek", "kurcz", "ryba", "mieso", "schab"), 2, "roast")
+    _add_prefix_score("reduce", ("karmel", "reduk", "odpar", "syrop", "powidl"), 3, "reduce")
+
+    if re.search(r"\b(zalej|zalej wrzatkiem|odcedz|gotuj)\b", blob) and re.search(
+        r"\b(ryz|kasz|kuskus|bulgur|makaron|soczew|fasol)\b",
+        blob,
+    ):
+        scores["hydrate"] += 4
+        signals.append("hydrate:verb")
+
+    if re.search(r"\b(wymieszaj ciasto|roztrzep|usmaz|smaz nale)\b", blob):
+        scores["batter"] += 3
+        signals.append("batter:verb")
+
+    if re.search(r"\b(karmeliz|odparuj|zredukuj)\b", blob):
+        scores["reduce"] += 4
+        signals.append("reduce:verb")
+
+    if declared_category == "sniadania":
+        scores["batter"] += 2
+        signals.append("declared:sniadania")
+    if declared_category in ("obiady", "lunchbox"):
+        scores["roast"] += 1
+        scores["hydrate"] += 1
+        signals.append(f"declared:{declared_category}")
+    if declared_category == "desery":
+        scores["reduce"] += 1
+        scores["batter"] += 1
+        signals.append("declared:desery")
+
+    profile_order = ["batter", "hydrate", "roast", "reduce"]
+    ranked = sorted(profile_order, key=lambda key: (scores[key], -profile_order.index(key)), reverse=True)
+    best = ranked[0]
+    best_score = scores[best]
+    second_score = scores[ranked[1]] if len(ranked) > 1 else 0
+
+    if best_score <= 0:
+        return ProcessClassResult(process_class="unknown", confidence=0.25, signals=signals)
+
+    confidence = 0.45 + min(0.5, max(0.0, (best_score - second_score) * 0.12))
+    return ProcessClassResult(process_class=best, confidence=round(confidence, 2), signals=signals)
+
+
+def estimate_final_weight_deterministic(
+    *,
+    raw_weight_g: float,
+    breakdown: dict,
+    process_result: ProcessClassResult,
+) -> tuple[Optional[float], List[str]]:
+    if raw_weight_g <= 0:
+        return None, []
+
+    process_class = process_result.process_class
+    assumptions: List[str] = []
+    estimated_weight = raw_weight_g
+    dry_total = (
+        float(breakdown.get("hydrate_grain_dry_g") or 0.0)
+        + float(breakdown.get("hydrate_pasta_dry_g") or 0.0)
+        + float(breakdown.get("hydrate_legume_dry_g") or 0.0)
+    )
+
+    if process_class == "batter":
+        estimated_weight = raw_weight_g * PROCESS_CLASS_YIELD_FACTOR["batter"]
+        assumptions.append("Proces BATTER: retention ~88%")
+    elif process_class == "hydrate":
+        if dry_total > 0:
+            hydrated = (
+                raw_weight_g
+                - dry_total
+                + (float(breakdown.get("hydrate_grain_dry_g") or 0.0) * HYDRATE_MULTIPLIERS["grain"])
+                + (float(breakdown.get("hydrate_pasta_dry_g") or 0.0) * HYDRATE_MULTIPLIERS["pasta"])
+                + (float(breakdown.get("hydrate_legume_dry_g") or 0.0) * HYDRATE_MULTIPLIERS["legume"])
+            )
+            estimated_weight = hydrated
+            assumptions.append("Proces HYDRATE: skala dla skladnikow suchych")
+        else:
+            estimated_weight = raw_weight_g * 1.1
+            assumptions.append("Proces HYDRATE: fallback 1.1x")
+    elif process_class == "roast":
+        estimated_weight = raw_weight_g * PROCESS_CLASS_YIELD_FACTOR["roast"]
+        assumptions.append("Proces ROAST: retention ~75%")
+    elif process_class == "reduce":
+        water_g = float(breakdown.get("water_g") or 0.0)
+        if water_g > 0:
+            caramel_signal = any("reduce:karmel" in signal for signal in process_result.signals)
+            retention = 0.05 if caramel_signal else 0.10
+            estimated_weight = raw_weight_g - (water_g * (1.0 - retention))
+            assumptions.append(
+                f"Proces REDUCE: odparowanie wody {int((1.0 - retention) * 100)}%"
+            )
+        else:
+            estimated_weight = raw_weight_g * 0.9
+            assumptions.append("Proces REDUCE: fallback 90%")
+    else:
+        assumptions.append("Proces UNKNOWN: brak korekty")
+
+    solid_weight_g = float(breakdown.get("solid_weight_g") or 0.0)
+    if process_class == "batter":
+        min_batter_weight = raw_weight_g * 0.55
+        if estimated_weight < min_batter_weight:
+            estimated_weight = min_batter_weight
+            assumptions.append("Guardrail BATTER: max utrata 45%")
+    if process_class == "hydrate" and dry_total > 0:
+        min_hydrate_weight = raw_weight_g * 1.5
+        if estimated_weight < min_hydrate_weight:
+            estimated_weight = min_hydrate_weight
+            assumptions.append("Guardrail HYDRATE: min wzrost 1.5x")
+    if solid_weight_g > 0 and estimated_weight < solid_weight_g:
+        estimated_weight = solid_weight_g
+        assumptions.append("Guardrail: masa >= suma skladnikow stalych")
+
+    estimated_weight = max(1.0, estimated_weight)
+    return round(estimated_weight, 1), assumptions
+
+
+def _estimate_total_weight_from_ingredients(ingredients: List[str]) -> tuple[Optional[float], dict]:
+    breakdown = _extract_ingredient_weight_breakdown(ingredients)
+    total_g = float(breakdown.get("total_g") or 0.0)
+    if total_g <= 0:
+        return None, breakdown
+    return round(total_g, 1), breakdown
+
+
 def estimate_total_weight_with_ai(
-    title: str, ingredients: List[str], instructions: List[str]
+    title: str,
+    ingredients: List[str],
+    instructions: List[str],
+    *,
+    process_class_hint: Optional[str] = None,
+    min_weight_g: Optional[float] = None,
+    max_weight_g: Optional[float] = None,
 ) -> Optional[float]:
     if client is None or not ingredients:
         return None
@@ -1015,12 +1455,16 @@ def estimate_total_weight_with_ai(
             f"title: {title or ''}",
             f"ingredients: {json.dumps(ingredients, ensure_ascii=False)}",
             f"instructions: {json.dumps(instructions, ensure_ascii=False)}",
+            f"process_class_hint: {process_class_hint or 'unknown'}",
+            f"min_weight_g: {round(float(min_weight_g), 1) if min_weight_g else 'null'}",
+            f"max_weight_g: {round(float(max_weight_g), 1) if max_weight_g else 'null'}",
             "",
             "Wymagany format:",
             '{ "estimated_total_weight_g": number }',
             "",
             "Zasady:",
             "- liczba >= 0",
+            "- jesli podano min_weight_g i max_weight_g, wynik musi byc w tym zakresie",
             "- bez komentarzy i dodatkowych pol",
         ]
     )
@@ -1048,9 +1492,11 @@ def parse_yield_context(
     title: str,
     ingredients: List[str],
     instructions: List[str],
+    declared_category: Optional[RecipeCategoryValue] = None,
 ) -> YieldContext:
     raw = (yield_text or "").strip()
-    context = YieldContext(yield_display_label=raw or None)
+    normalized_declared = normalize_declared_category(declared_category)
+    context = YieldContext(yield_display_label=raw or None, declared_category=normalized_declared)
     if not raw:
         return context
 
@@ -1182,7 +1628,12 @@ def parse_yield_context(
 
     total_weight_g = _extract_total_weight_g(norm)
     if total_weight_g:
-        standard_weight_g = _get_standard_portion_weight_g(title, ingredients, instructions)
+        standard_weight_g = _get_standard_portion_weight_g(
+            title,
+            ingredients,
+            instructions,
+            declared_category=normalized_declared,
+        )
         portions = max(1, round(total_weight_g / standard_weight_g))
         portion_weight_g = round(total_weight_g / portions, 1)
         return YieldContext(
@@ -1190,6 +1641,7 @@ def parse_yield_context(
             base_portions=portions,
             servings_unit="servings",
             yield_display_label=raw,
+            declared_category=normalized_declared,
             total_weight_g=total_weight_g,
             portion_weight_g=portion_weight_g,
             assumption_reason=f"Used standard portion weight {standard_weight_g:.0f} g",
@@ -1203,33 +1655,129 @@ def resolve_yield_context_weights(
     title: str,
     ingredients: List[str],
     instructions: List[str],
-) -> YieldContext:
+) -> tuple[YieldContext, WeightEstimationMetadata]:
+    declared_category = normalize_declared_category(context.declared_category)
+    context.declared_category = declared_category
+    metadata = WeightEstimationMetadata(
+        process_class="unknown",
+        raw_weight_g=None,
+        final_weight_estimation_source=None,
+        final_weight_confidence=None,
+    )
+
     if context.portion_weight_g and context.total_weight_g:
-        return context
+        metadata.raw_weight_g = context.total_weight_g
+        metadata.final_weight_estimation_source = "deterministic"
+        metadata.final_weight_confidence = 100.0
+        process_result = infer_process_class(
+            title=title,
+            ingredients=ingredients,
+            instructions=instructions,
+            declared_category=declared_category,
+        )
+        metadata.process_class = process_result.process_class
+        return context, metadata
 
     total_weight_from_context = context.total_weight_g is not None
     total_weight_g = context.total_weight_g
+    process_result = infer_process_class(
+        title=title,
+        ingredients=ingredients,
+        instructions=instructions,
+        declared_category=declared_category,
+    )
+    metadata.process_class = process_result.process_class
+    breakdown: dict = {}
+    raw_weight_confidence = 0.0
+
+    deterministic_weight: Optional[float] = None
     if total_weight_g is None:
-        total_weight_g = _estimate_total_weight_from_ingredients(ingredients)
-        if total_weight_g is not None:
-            adjusted_weight_g, assumptions = _adjust_weight_for_process(
-                total_weight_g=total_weight_g,
-                title=title,
-                ingredients=ingredients,
-                instructions=instructions,
+        raw_weight_g, breakdown = _estimate_total_weight_from_ingredients(ingredients)
+        metadata.raw_weight_g = raw_weight_g
+        raw_weight_confidence = float(breakdown.get("confidence") or 0.0)
+        if raw_weight_g is not None:
+            deterministic_weight, assumptions = estimate_final_weight_deterministic(
+                raw_weight_g=raw_weight_g,
+                breakdown=breakdown,
+                process_result=process_result,
             )
-            total_weight_g = adjusted_weight_g
             if assumptions and not context.assumption_reason:
                 context.assumption_reason = "; ".join(assumptions)
-    if total_weight_g is None:
-        total_weight_g = estimate_total_weight_with_ai(title, ingredients, instructions)
+
+        should_try_ai = (
+            deterministic_weight is None
+            or raw_weight_confidence < 0.55
+            or process_result.process_class == "unknown"
+        )
+
+        ai_weight: Optional[float] = None
+        if should_try_ai:
+            min_weight_g = float(breakdown.get("solid_weight_g") or 1.0) if breakdown else 1.0
+            max_weight_g: Optional[float] = None
+            if raw_weight_g and raw_weight_g > 0:
+                max_weight_g = raw_weight_g * (3.5 if process_result.process_class == "hydrate" else 2.2)
+            ai_weight = estimate_total_weight_with_ai(
+                title,
+                ingredients,
+                instructions,
+                process_class_hint=process_result.process_class,
+                min_weight_g=min_weight_g,
+                max_weight_g=max_weight_g,
+            )
+
+        if deterministic_weight is not None and ai_weight is not None:
+            if deterministic_weight <= 0:
+                total_weight_g = ai_weight
+                metadata.final_weight_estimation_source = "ai"
+            else:
+                diff_ratio = abs(ai_weight - deterministic_weight) / deterministic_weight
+                if diff_ratio <= 0.35:
+                    total_weight_g = round((ai_weight + deterministic_weight) / 2.0, 1)
+                    metadata.final_weight_estimation_source = "mixed"
+                else:
+                    total_weight_g = ai_weight
+                    metadata.final_weight_estimation_source = "ai"
+        elif ai_weight is not None:
+            total_weight_g = ai_weight
+            metadata.final_weight_estimation_source = "ai"
+        else:
+            total_weight_g = deterministic_weight
+            metadata.final_weight_estimation_source = "deterministic"
+    else:
+        metadata.raw_weight_g = total_weight_g
+        metadata.final_weight_estimation_source = "deterministic"
 
     if total_weight_g is None:
-        return context
+        return context, metadata
+
+    if breakdown and breakdown.get("solid_weight_g"):
+        total_weight_g = max(float(total_weight_g), float(breakdown.get("solid_weight_g")))
+    total_weight_g = max(1.0, float(total_weight_g))
+
+    source = metadata.final_weight_estimation_source
+    if source == "deterministic":
+        metadata.final_weight_confidence = round(
+            max(45.0, min(95.0, 55.0 + (process_result.confidence * 20.0) + (raw_weight_confidence * 20.0))),
+            1,
+        )
+    elif source == "mixed":
+        metadata.final_weight_confidence = round(
+            max(40.0, min(85.0, 48.0 + (process_result.confidence * 12.0) + (raw_weight_confidence * 15.0))),
+            1,
+        )
+    elif source == "ai":
+        metadata.final_weight_confidence = 45.0
+    else:
+        metadata.final_weight_confidence = None
 
     portions = max(1, int(context.base_portions or 1))
     if context.mode == "unknown" and portions <= 1:
-        standard_weight_g = _get_standard_portion_weight_g(title, ingredients, instructions)
+        standard_weight_g = _get_standard_portion_weight_g(
+            title,
+            ingredients,
+            instructions,
+            declared_category=declared_category,
+        )
         portions = max(1, round(total_weight_g / standard_weight_g))
         context.base_portions = portions
         context.mode = "total_weight_only"
@@ -1240,9 +1788,19 @@ def resolve_yield_context_weights(
         context.mode in ("unknown", "total_weight_only")
         and portions <= 1
         and total_weight_g >= SNACK_TOTAL_WEIGHT_THRESHOLD_G
-        and _is_snack_like_recipe(title, ingredients, instructions)
+        and _is_snack_like_recipe(
+            title,
+            ingredients,
+            instructions,
+            declared_category=declared_category,
+        )
     ):
-        standard_snack_portion = _get_snack_standard_portion_weight_g(title, ingredients, instructions)
+        standard_snack_portion = _get_snack_standard_portion_weight_g(
+            title,
+            ingredients,
+            instructions,
+            declared_category=declared_category,
+        )
         portions = max(1, round(total_weight_g / standard_snack_portion))
         context.base_portions = portions
         context.mode = "total_weight_only"
@@ -1251,11 +1809,11 @@ def resolve_yield_context_weights(
     portion_weight = round(total_weight_g / portions, 1)
     context.total_weight_g = round(total_weight_g, 1)
     context.portion_weight_g = portion_weight
-    if context.mode == "unknown":
+    if context.mode == "unknown" and not context.assumption_reason:
         context.assumption_reason = "Estimated total and per-portion weight from ingredients"
     if total_weight_from_context and not context.assumption_reason:
         context.assumption_reason = "Used total weight provided by recipe yield"
-    return context
+    return context, metadata
 
 
 def extract_portion_count(yield_text: str) -> int:
@@ -1602,11 +2160,13 @@ def _rebalance_portions_by_profile_if_needed(
     instructions: List[str],
     nutrition_per_portion: Optional[dict],
 ) -> PortionAdjustmentMetadata:
+    declared_category = normalize_declared_category(context.declared_category)
     profile_result = infer_portion_profile(
         title=title,
         ingredients=ingredients,
         instructions=instructions,
         yield_context=context,
+        declared_category=declared_category,
     )
     profile = profile_result.profile
     rules = _get_portion_profile_rules(profile)
@@ -1632,6 +2192,18 @@ def _rebalance_portions_by_profile_if_needed(
             or current_portion_weight < (float(rules["min_g"]) * 0.5)
         )
         if not piece_absurd:
+            return metadata
+
+    if context.mode in ("explicit_servings", "explicit_people"):
+        hard_weight_absurd = (
+            current_portion_weight < (float(rules["min_g"]) * 0.6)
+            or current_portion_weight > (float(rules["max_g"]) * 2.0)
+        )
+        hard_calories_absurd = (
+            calories is not None
+            and calories > (float(rules["max_kcal"]) * 1.6)
+        )
+        if not (hard_weight_absurd or hard_calories_absurd):
             return metadata
 
     weight_out_of_range = (
@@ -1816,6 +2388,16 @@ def apply_portion_adjustment_to_recipe(
     recipe.portion_profile = metadata.profile
     recipe.target_portion_weight_g = _coerce_nutrition_number(metadata.target_portion_weight_g)
     recipe.original_base_portions = metadata.original_base_portions
+
+
+def apply_weight_estimation_to_recipe(
+    recipe: RecipeDB,
+    metadata: WeightEstimationMetadata,
+) -> None:
+    recipe.process_class = metadata.process_class
+    recipe.raw_weight_g = _coerce_nutrition_number(metadata.raw_weight_g)
+    recipe.final_weight_estimation_source = metadata.final_weight_estimation_source
+    recipe.final_weight_confidence = _coerce_nutrition_number(metadata.final_weight_confidence)
 
 
 def estimate_recipe_nutrition(
@@ -2440,6 +3022,7 @@ async def parse_and_save_recipe(
     Jeśli przepis już istnieje, aktualizuje jego dane.
     """
     url_str = str(recipe_in.url)
+    declared_category = normalize_declared_category(recipe_in.declared_category)
 
     logger.info(f"Parsing recipe from: {url_str}")
 
@@ -2482,13 +3065,16 @@ async def parse_and_save_recipe(
             title=title,
             ingredients=ingredients,
             instructions=instructions_list,
+            declared_category=declared_category,
         )
-        yield_context = resolve_yield_context_weights(
+        yield_context.declared_category = declared_category
+        yield_context, weight_metadata = resolve_yield_context_weights(
             context=yield_context,
             title=title,
             ingredients=ingredients,
             instructions=instructions_list,
         )
+        yield_context.declared_category = declared_category
 
         base_portions = max(1, int(yield_context.base_portions or 1))
         servings_unit = yield_context.servings_unit
@@ -2537,9 +3123,11 @@ async def parse_and_save_recipe(
             recipe.instructions = instructions_text
             recipe.base_portions = base_portions
             recipe.servings_unit = servings_unit
+            recipe.declared_category = declared_category or recipe.declared_category
             recipe.yield_display_label = yield_context.yield_display_label
             recipe.yield_assumption_reason = yield_context.assumption_reason
             apply_portion_adjustment_to_recipe(recipe, portion_adjustment)
+            apply_weight_estimation_to_recipe(recipe, weight_metadata)
             recipe.total_weight_g = yield_context.total_weight_g
             recipe.portion_weight_g = yield_context.portion_weight_g
             recipe.piece_weight_g = yield_context.piece_weight_g
@@ -2565,11 +3153,16 @@ async def parse_and_save_recipe(
                 instructions=instructions_text,
                 base_portions=base_portions,
                 servings_unit=servings_unit,
+                declared_category=declared_category,
                 yield_display_label=yield_context.yield_display_label,
                 yield_assumption_reason=yield_context.assumption_reason,
                 portion_adjusted_auto=portion_adjustment.adjusted,
                 portion_adjustment_code=portion_adjustment.code,
                 portion_profile=portion_adjustment.profile,
+                process_class=weight_metadata.process_class,
+                raw_weight_g=weight_metadata.raw_weight_g,
+                final_weight_estimation_source=weight_metadata.final_weight_estimation_source,
+                final_weight_confidence=weight_metadata.final_weight_confidence,
                 target_portion_weight_g=portion_adjustment.target_portion_weight_g,
                 original_base_portions=portion_adjustment.original_base_portions,
                 total_weight_g=yield_context.total_weight_g,
@@ -3489,6 +4082,7 @@ async def create_custom_recipe(
     AI parsuje tytuł, składniki i instrukcje.
     """
     content = (raw_data.get("content") or "").strip()
+    declared_category = normalize_declared_category(raw_data.get("declared_category"))
     if not content:
         raise HTTPException(status_code=400, detail="Tekst przepisu nie może być pusty")
 
@@ -3545,19 +4139,22 @@ ZWROT (tylko JSON):
             title=parsed_title,
             ingredients=parsed_ingredients,
             instructions=instructions_list,
+            declared_category=declared_category,
         )
+        yield_context.declared_category = declared_category
         if yield_context.mode == "unknown":
             try:
                 fallback_portions = int(parsed_data.get("portions") or 1)
             except (TypeError, ValueError):
                 fallback_portions = 1
             yield_context.base_portions = max(1, fallback_portions)
-        yield_context = resolve_yield_context_weights(
+        yield_context, weight_metadata = resolve_yield_context_weights(
             context=yield_context,
             title=parsed_title,
             ingredients=parsed_ingredients,
             instructions=instructions_list,
         )
+        yield_context.declared_category = declared_category
         base_portions = max(1, int(yield_context.base_portions or 1))
         servings_unit = yield_context.servings_unit
         nutrition_estimate, nutrition_source, nutrition_confidence_score = estimate_recipe_nutrition(
@@ -3601,11 +4198,16 @@ ZWROT (tylko JSON):
             instructions=instructions_text,
             base_portions=base_portions,
             servings_unit=servings_unit,
+            declared_category=declared_category,
             yield_display_label=yield_context.yield_display_label,
             yield_assumption_reason=yield_context.assumption_reason,
             portion_adjusted_auto=portion_adjustment.adjusted,
             portion_adjustment_code=portion_adjustment.code,
             portion_profile=portion_adjustment.profile,
+            process_class=weight_metadata.process_class,
+            raw_weight_g=weight_metadata.raw_weight_g,
+            final_weight_estimation_source=weight_metadata.final_weight_estimation_source,
+            final_weight_confidence=weight_metadata.final_weight_confidence,
             target_portion_weight_g=portion_adjustment.target_portion_weight_g,
             original_base_portions=portion_adjustment.original_base_portions,
             total_weight_g=yield_context.total_weight_g,
@@ -3886,18 +4488,21 @@ async def create_recipe(
 
     base_portions = max(1, int(payload.base_portions or 1))
     servings_unit = normalize_servings_unit(payload.servings_unit)
+    declared_category = normalize_declared_category(payload.declared_category)
     yield_context = YieldContext(
         mode="explicit_people" if servings_unit == "people" else "explicit_servings",
         base_portions=base_portions,
         servings_unit="people" if servings_unit == "people" else "servings",
+        declared_category=declared_category,
         yield_display_label=f"{base_portions} {'osob' if servings_unit == 'people' else 'porcji'}",
     )
-    yield_context = resolve_yield_context_weights(
+    yield_context, weight_metadata = resolve_yield_context_weights(
         context=yield_context,
         title=title,
         ingredients=ingredients,
         instructions=instructions_list,
     )
+    yield_context.declared_category = declared_category
 
     nutrition_estimate, nutrition_source, nutrition_confidence_score = estimate_recipe_nutrition(
         title=title,
@@ -3935,11 +4540,16 @@ async def create_recipe(
         instructions=instructions_text,
         base_portions=base_portions,
         servings_unit=servings_unit,
+        declared_category=declared_category,
         yield_display_label=yield_context.yield_display_label,
         yield_assumption_reason=yield_context.assumption_reason,
         portion_adjusted_auto=portion_adjustment.adjusted,
         portion_adjustment_code=portion_adjustment.code,
         portion_profile=portion_adjustment.profile,
+        process_class=weight_metadata.process_class,
+        raw_weight_g=weight_metadata.raw_weight_g,
+        final_weight_estimation_source=weight_metadata.final_weight_estimation_source,
+        final_weight_confidence=weight_metadata.final_weight_confidence,
         target_portion_weight_g=portion_adjustment.target_portion_weight_g,
         original_base_portions=portion_adjustment.original_base_portions,
         total_weight_g=yield_context.total_weight_g,

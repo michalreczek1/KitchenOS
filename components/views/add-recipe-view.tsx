@@ -41,7 +41,7 @@ export function AddRecipeView({ onRecipeAdded }: AddRecipeViewProps) {
     setStatus('parsing')
 
     try {
-      const recipe = await parseRecipe(url)
+      const recipe = await parseRecipe(url, urlCategory)
       const suggestedCategory = inferRecipeCategory({
         title: recipe.title,
         ingredients: Array.isArray((recipe as Recipe & { ingredients?: string[] }).ingredients)
@@ -98,6 +98,7 @@ export function AddRecipeView({ onRecipeAdded }: AddRecipeViewProps) {
       const content = contentParts.join('\n')
       const recipe = await addManualRecipe({
         content,
+        declared_category: categoryToSave,
       })
       saveCustomRecipeCategory(recipe.id, categoryToSave)
       showToast('Przepis dodany pomyslnie!', 'success')

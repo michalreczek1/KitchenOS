@@ -76,11 +76,16 @@ export interface Recipe {
   source_url: string
   base_portions?: number
   servings_unit?: ServingsUnit
+  declared_category?: RecipeCategory | null
   yield_display_label?: string | null
   yield_assumption_reason?: string | null
   portion_adjusted_auto?: boolean | null
   portion_adjustment_code?: string | null
-  portion_profile?: 'soup' | 'main' | 'dessert_baked' | 'dessert_dense' | 'default' | null
+  portion_profile?: 'soup' | 'main' | 'dessert_baked' | 'dessert_dense' | 'breakfast_sweet' | 'default' | null
+  process_class?: 'batter' | 'hydrate' | 'roast' | 'reduce' | 'unknown' | null
+  raw_weight_g?: number | null
+  final_weight_estimation_source?: 'deterministic' | 'ai' | 'mixed' | null
+  final_weight_confidence?: number | null
   target_portion_weight_g?: number | null
   original_base_portions?: number | null
   total_weight_g?: number | null
@@ -309,10 +314,13 @@ export async function fetchStats(): Promise<Stats> {
   return response.json()
 }
 
-export async function parseRecipe(url: string): Promise<Recipe> {
+export async function parseRecipe(url: string, declaredCategory?: RecipeCategory): Promise<Recipe> {
   const response = await apiFetch('/api/parse-recipe', {
     method: 'POST',
-    body: JSON.stringify({ url }),
+    body: JSON.stringify({
+      url,
+      ...(declaredCategory ? { declared_category: declaredCategory } : {}),
+    }),
   })
   if (!response.ok) {
     throw new Error('Failed to parse recipe')
@@ -412,12 +420,16 @@ export async function deleteRecipe(id: number): Promise<void> {
 
 export interface ManualRecipeData {
   content: string
+  declared_category?: RecipeCategory
 }
 
 export async function addManualRecipe(data: ManualRecipeData): Promise<Recipe> {
   const response = await apiFetch('/api/recipes/custom', {
     method: 'POST',
-    body: JSON.stringify({ content: data.content }),
+    body: JSON.stringify({
+      content: data.content,
+      ...(data.declared_category ? { declared_category: data.declared_category } : {}),
+    }),
   })
   if (!response.ok) {
     throw new Error('Failed to add manual recipe')
@@ -437,7 +449,10 @@ export async function inspireRecipe(ingredients: string[]): Promise<InspireRecip
   return response.json()
 }
 
-export async function saveInspiredRecipe(recipe: InspireRecipe): Promise<Recipe> {
+export async function saveInspiredRecipe(
+  recipe: InspireRecipe,
+  declaredCategory?: RecipeCategory
+): Promise<Recipe> {
   const ingredients = recipe.ingredients.map((entry) => {
     const amount = entry.amount?.trim()
     return amount ? `${entry.item} (${amount})` : entry.item
@@ -452,6 +467,7 @@ export async function saveInspiredRecipe(recipe: InspireRecipe): Promise<Recipe>
       prep_time: recipe.prep_time,
       difficulty: recipe.difficulty,
       base_portions: 1,
+      ...(declaredCategory ? { declared_category: declaredCategory } : {}),
     }),
   })
   if (!response.ok) {

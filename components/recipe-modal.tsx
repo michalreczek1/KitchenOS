@@ -87,13 +87,15 @@ const formatWeightLabel = (value?: number | null) => {
 }
 
 const formatPortionProfileLabel = (
-  profile?: 'soup' | 'main' | 'dessert_baked' | 'dessert_dense' | 'default' | null
+  profile?: 'soup' | 'main' | 'dessert_baked' | 'dessert_dense' | 'breakfast_sweet' | 'default' | null
 ) => {
   switch (profile) {
     case 'soup':
       return 'zupa'
     case 'main':
       return 'danie główne'
+    case 'breakfast_sweet':
+      return 'śniadanie na słodko'
     case 'dessert_baked':
       return 'deser pieczony'
     case 'dessert_dense':
@@ -101,6 +103,32 @@ const formatPortionProfileLabel = (
     default:
       return 'profil ogólny'
   }
+}
+
+const formatProcessClassLabel = (
+  processClass?: 'batter' | 'hydrate' | 'roast' | 'reduce' | 'unknown' | null
+) => {
+  switch (processClass) {
+    case 'batter':
+      return 'BATTER'
+    case 'hydrate':
+      return 'HYDRATE'
+    case 'roast':
+      return 'ROAST'
+    case 'reduce':
+      return 'REDUCE'
+    case 'unknown':
+      return 'UNKNOWN'
+    default:
+      return null
+  }
+}
+
+const formatWeightSourceLabel = (value?: 'deterministic' | 'ai' | 'mixed' | null) => {
+  if (value === 'deterministic') return 'deterministycznie'
+  if (value === 'ai') return 'AI fallback'
+  if (value === 'mixed') return 'mieszane'
+  return null
 }
 
 const normalizeKeywordText = (value?: string | null) =>
@@ -151,12 +179,20 @@ export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
         : recipe?.nutrition_source === 'ai'
           ? 'estymacja AI'
           : null
-  const confidenceTooltipText =
-    confidenceLabel || sourceLabel
-      ? `${confidenceLabel ? `Pewność estymacji: ${confidenceLabel}.` : ''}${
-          sourceLabel ? `${confidenceLabel ? ' ' : ''}Źródło: ${sourceLabel}.` : ''
-        }`
+  const processClassLabel = formatProcessClassLabel(recipe?.process_class ?? null)
+  const weightSourceLabel = formatWeightSourceLabel(recipe?.final_weight_estimation_source ?? null)
+  const finalWeightConfidenceLabel =
+    typeof recipe?.final_weight_confidence === 'number' && !Number.isNaN(recipe.final_weight_confidence)
+      ? `${Math.round(recipe.final_weight_confidence)}%`
       : null
+  const tooltipParts = [
+    confidenceLabel ? `Pewność estymacji nutrition: ${confidenceLabel}.` : null,
+    sourceLabel ? `Źródło nutrition: ${sourceLabel}.` : null,
+    processClassLabel ? `Klasa procesu: ${processClassLabel}.` : null,
+    weightSourceLabel ? `Estymacja masy: ${weightSourceLabel}.` : null,
+    finalWeightConfidenceLabel ? `Pewność estymacji masy: ${finalWeightConfidenceLabel}.` : null,
+  ].filter(Boolean)
+  const confidenceTooltipText = tooltipParts.length > 0 ? tooltipParts.join(' ') : null
   const nutritionRows = [
     { label: 'Kalorie', value: caloriesLabel },
     { label: 'Białko', value: proteinLabel },
