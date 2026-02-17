@@ -22,7 +22,7 @@ import { useToast } from '@/components/toast-provider'
 
 interface PlannerViewProps {
   plannerRecipes: PlannerRecipe[]
-  onUpdateShoppingMultiplier: (id: number, shoppingMultiplier: number) => void
+  onUpdatePortions: (id: number, portions: number) => void
   onRemoveFromPlanner: (id: number, day?: string) => void
   onGenerateShoppingList: () => void
   isGenerating: boolean
@@ -60,25 +60,6 @@ const getAssignedDays = (recipe: PlannerRecipe) => {
     return [recipe.assignedDay]
   }
   return []
-}
-
-const getBasePortions = (recipe: PlannerRecipe) => {
-  const value = recipe.base_portions ?? recipe.portions ?? 1
-  const normalized = Number.isFinite(value) ? Math.round(value) : 1
-  return Math.max(1, normalized)
-}
-
-const getMaxShoppingMultiplier = (recipe: PlannerRecipe) => {
-  const basePortions = getBasePortions(recipe)
-  return Math.max(1, Math.floor(500 / basePortions))
-}
-
-const getShoppingMultiplier = (recipe: PlannerRecipe) => {
-  const maxMultiplier = getMaxShoppingMultiplier(recipe)
-  const value = recipe.shopping_multiplier ?? 1
-  const normalized = Number.isFinite(value) ? Math.round(value) : 1
-  if (normalized < 1) return 1
-  return Math.min(maxMultiplier, normalized)
 }
 
 const formatCalendarDate = (date: Date) => {
@@ -164,7 +145,7 @@ function getWeekDays(): DayInfo[] {
 
 export function PlannerView({
   plannerRecipes,
-  onUpdateShoppingMultiplier,
+  onUpdatePortions,
   onRemoveFromPlanner,
   onGenerateShoppingList,
   isGenerating,
@@ -177,11 +158,9 @@ export function PlannerView({
   const [isGoogleBusy, setIsGoogleBusy] = useState(false)
   const [isSyncing, setIsSyncing] = useState(false)
   const hasLoadedCalendars = useRef(false)
-  const totalPortions = plannerRecipes.reduce((sum, recipe) => {
-    const dayCount = getAssignedDays(recipe).length || 1
-    const basePortions = getBasePortions(recipe)
-    const shoppingMultiplier = getShoppingMultiplier(recipe)
-    return sum + basePortions * shoppingMultiplier * dayCount
+  const totalPortions = plannerRecipes.reduce((sum, r) => {
+    const dayCount = getAssignedDays(r).length || 1
+    return sum + r.portions * dayCount
   }, 0)
   const weekDays = useMemo(() => getWeekDays(), [])
   const weekDayNames = useMemo(() => weekDays.map((day) => day.name), [weekDays])
@@ -229,13 +208,7 @@ export function PlannerView({
         const key = `${recipe.id}-${dateString}`
         if (seen.has(key)) return
         seen.add(key)
-        const basePortions = getBasePortions(recipe)
-        const shoppingMultiplier = getShoppingMultiplier(recipe)
-        events.push({
-          recipe_id: recipe.id,
-          date: dateString,
-          portions: basePortions * shoppingMultiplier,
-        })
+        events.push({ recipe_id: recipe.id, date: dateString, portions: recipe.portions })
       })
     })
 
@@ -363,7 +336,7 @@ export function PlannerView({
         <div className="space-y-2">
           <h1 className="text-3xl font-bold text-foreground">Planer Tygodniowy</h1>
           <p className="text-muted-foreground">
-            Przypisz przepisy do dni i ustaw mnoznik gotowania
+            Przypisz przepisy do dni i ustaw liczbę porcji
           </p>
         </div>
         {plannerRecipes.length > 0 && (
@@ -418,8 +391,6 @@ export function PlannerView({
                   const nextDay = getNextAvailableDay(assignedDays, weekDayNames, day.name)
                   const nextDayLabel = nextDay ? shortNameByDay.get(nextDay) ?? nextDay : null
                   const displayImage = getPlannerImage(recipe)
-                  const shoppingMultiplier = getShoppingMultiplier(recipe)
-                  const maxShoppingMultiplier = getMaxShoppingMultiplier(recipe)
 
                   return (
                     <div
@@ -460,16 +431,15 @@ export function PlannerView({
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-1 rounded-lg border border-border bg-card p-0.5">
                           <button
-                            onClick={() => onUpdateShoppingMultiplier(recipe.id, Math.max(1, shoppingMultiplier - 1))}
+                            onClick={() => onUpdatePortions(recipe.id, Math.max(1, recipe.portions - 1))}
                             className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
                           >
                             <Minus className="h-3 w-3" />
                           </button>
-                          <span className="w-8 text-center text-xs font-medium">x{shoppingMultiplier}</span>
+                          <span className="w-5 text-center text-xs font-medium">{recipe.portions}</span>
                           <button
-                            onClick={() => onUpdateShoppingMultiplier(recipe.id, Math.min(maxShoppingMultiplier, shoppingMultiplier + 1))}
-                            disabled={shoppingMultiplier >= maxShoppingMultiplier}
-                            className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                            onClick={() => onUpdatePortions(recipe.id, recipe.portions + 1)}
+                            className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
                           >
                             <Plus className="h-3 w-3" />
                           </button>
@@ -519,8 +489,6 @@ export function PlannerView({
                 ? CATEGORY_STYLES[recipe.category] ?? 'border-border bg-muted text-muted-foreground'
                 : 'border-border bg-muted text-muted-foreground'
               const displayImage = getPlannerImage(recipe)
-              const shoppingMultiplier = getShoppingMultiplier(recipe)
-              const maxShoppingMultiplier = getMaxShoppingMultiplier(recipe)
               return (
                 <div
                   key={recipe.id}
@@ -577,16 +545,15 @@ export function PlannerView({
                 <div className="flex items-center gap-2 sm:shrink-0">
                   <div className="flex items-center gap-1 rounded-lg border border-border bg-card p-0.5">
                     <button
-                      onClick={() => onUpdateShoppingMultiplier(recipe.id, Math.max(1, shoppingMultiplier - 1))}
+                      onClick={() => onUpdatePortions(recipe.id, Math.max(1, recipe.portions - 1))}
                       className="flex h-7 w-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
                     >
                       <Minus className="h-3.5 w-3.5" />
                     </button>
-                    <span className="w-10 text-center text-sm font-medium">x{shoppingMultiplier}</span>
+                    <span className="w-6 text-center text-sm font-medium">{recipe.portions}</span>
                     <button
-                      onClick={() => onUpdateShoppingMultiplier(recipe.id, Math.min(maxShoppingMultiplier, shoppingMultiplier + 1))}
-                      disabled={shoppingMultiplier >= maxShoppingMultiplier}
-                      className="flex h-7 w-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                      onClick={() => onUpdatePortions(recipe.id, recipe.portions + 1)}
+                      className="flex h-7 w-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
                     >
                       <Plus className="h-3.5 w-3.5" />
                     </button>
