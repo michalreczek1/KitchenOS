@@ -266,6 +266,7 @@ const normalizeShoppingList = (response: ShoppingListResponse): ShoppingList => 
 
 export interface PlannerRecipe extends Recipe {
   portions: number
+  shopping_multiplier?: number
   assignedDays?: string[]
   assignedDay?: string
 }
