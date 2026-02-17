@@ -40,6 +40,22 @@ const clampPortions = (value: number, fallback = PLANNER_MIN_PORTIONS) => {
   return Math.min(PLANNER_MAX_PORTIONS, normalized)
 }
 
+const getBasePortions = (recipe: Pick<Recipe, 'base_portions'> | Pick<PlannerRecipe, 'base_portions'>) =>
+  clampPortions(recipe.base_portions ?? PLANNER_MIN_PORTIONS)
+
+const getMaxShoppingMultiplier = (basePortions: number) => {
+  const normalizedBase = clampPortions(basePortions)
+  return Math.max(1, Math.floor(PLANNER_MAX_PORTIONS / normalizedBase))
+}
+
+const clampShoppingMultiplier = (value: number, basePortions: number, fallback = 1) => {
+  if (!Number.isFinite(value)) return fallback
+  const normalized = Math.round(value)
+  if (normalized < 1) return fallback
+  return Math.min(getMaxShoppingMultiplier(basePortions), normalized)
+}
+
+
 type ShoppingListMeta = {
   signature: string
   generatedAt: string
@@ -60,7 +76,7 @@ const buildPlannerSignature = (recipes: PlannerRecipe[]) => {
   const payload = recipes
     .map((recipe) => ({
       id: recipe.id,
-      portions: recipe.portions,
+      shoppingMultiplier: clampShoppingMultiplier(recipe.shopping_multiplier ?? 1, getBasePortions(recipe)),
       days: normalizeAssignedDays(recipe),
     }))
     .sort((a, b) => a.id - b.id)
@@ -86,12 +102,20 @@ const reconcilePlannerRecipes = (
       continue
     }
     const assignedDays = normalizeAssignedDays(planned)
+    const basePortions = getBasePortions(liveRecipe)
+    const legacyPortions = clampPortions(planned.portions ?? basePortions, basePortions)
+    const inferredMultiplier = clampShoppingMultiplier(
+      Math.round(legacyPortions / basePortions),
+      basePortions
+    )
+    const shoppingMultiplier = clampShoppingMultiplier(
+      planned.shopping_multiplier ?? inferredMultiplier,
+      basePortions
+    )
     const merged: PlannerRecipe = {
       ...liveRecipe,
-      portions: clampPortions(
-        planned.portions,
-        clampPortions(liveRecipe.base_portions ?? PLANNER_MIN_PORTIONS)
-      ),
+      portions: basePortions,
+      shopping_multiplier: shoppingMultiplier,
       assignedDays,
     }
     if (
@@ -101,6 +125,7 @@ const reconcilePlannerRecipes = (
       planned.category !== merged.category ||
       planned.rating !== merged.rating ||
       planned.portions !== merged.portions ||
+      planned.shopping_multiplier !== merged.shopping_multiplier ||
       JSON.stringify(normalizeAssignedDays(planned)) !== JSON.stringify(assignedDays)
     ) {
       changed = true
@@ -122,6 +147,7 @@ function KitchenOSApp({ user, onLogout }: { user: AuthUser; onLogout: () => void
   const [shoppingList, setShoppingList] = useState<ShoppingList | null>(null)
   const [shoppingListMeta, setShoppingListMeta] = useState<ShoppingListMeta | null>(null)
   const [isGeneratingList, setIsGeneratingList] = useState(false)
+  const [nextAutoRetryAt, setNextAutoRetryAt] = useState<number | null>(null)
   const lastAutoRequestSignature = useRef<string | null>(null)
   const { showToast } = useToast()
   const plannerStorageKey = `${PLANNER_STORAGE_KEY}_${user.id}`
@@ -169,7 +195,22 @@ function KitchenOSApp({ user, onLogout }: { user: AuthUser; onLogout: () => void
                 : recipe.assignedDay
                   ? [recipe.assignedDay]
                   : []
-            return { ...recipe, assignedDays }
+            const basePortions = getBasePortions(recipe)
+            const legacyPortions = clampPortions(recipe.portions ?? basePortions, basePortions)
+            const inferredMultiplier = clampShoppingMultiplier(
+              Math.round(legacyPortions / basePortions),
+              basePortions
+            )
+            const shoppingMultiplier = clampShoppingMultiplier(
+              recipe.shopping_multiplier ?? inferredMultiplier,
+              basePortions
+            )
+            return {
+              ...recipe,
+              portions: basePortions,
+              shopping_multiplier: shoppingMultiplier,
+              assignedDays,
+            }
           })
           setPlannerRecipes(normalized)
         }
@@ -239,16 +280,24 @@ function KitchenOSApp({ user, onLogout }: { user: AuthUser; onLogout: () => void
       if (prev.find((r) => r.id === recipe.id)) {
         return prev
       }
-      const initialPortions = clampPortions(recipe.base_portions ?? PLANNER_MIN_PORTIONS)
-      return [...prev, { ...recipe, portions: initialPortions, assignedDays: [] }]
+      const basePortions = getBasePortions(recipe)
+      return [...prev, { ...recipe, portions: basePortions, shopping_multiplier: 1, assignedDays: [] }]
     })
     showToast('Dodano do planera!', 'success')
   }, [showToast])
 
-  // Update portions
-  const handleUpdatePortions = useCallback((id: number, portions: number) => {
+  // Update shopping multiplier
+  const handleUpdateShoppingMultiplier = useCallback((id: number, shoppingMultiplier: number) => {
     setPlannerRecipes((prev) =>
-      prev.map((r) => (r.id === id ? { ...r, portions: clampPortions(portions) } : r))
+      prev.map((recipe) => {
+        if (recipe.id !== id) return recipe
+        const basePortions = getBasePortions(recipe)
+        return {
+          ...recipe,
+          portions: basePortions,
+          shopping_multiplier: clampShoppingMultiplier(shoppingMultiplier, basePortions),
+        }
+      })
     )
   }, [])
 
@@ -356,10 +405,12 @@ function KitchenOSApp({ user, onLogout }: { user: AuthUser; onLogout: () => void
     if (plannerRecipes.length === 0) return
     setIsGeneratingList(true)
     try {
-      const servings = plannerRecipes.reduce((acc, r) => {
-        const dayCount = r.assignedDays && r.assignedDays.length > 0 ? r.assignedDays.length : 1
-        const normalizedPortions = clampPortions(r.portions)
-        acc[r.id] = (acc[r.id] ?? 0) + normalizedPortions * dayCount
+      const servings = plannerRecipes.reduce((acc, recipe) => {
+        const dayCount = recipe.assignedDays && recipe.assignedDays.length > 0 ? recipe.assignedDays.length : 1
+        const basePortions = getBasePortions(recipe)
+        const shoppingMultiplier = clampShoppingMultiplier(recipe.shopping_multiplier ?? 1, basePortions)
+        const requestedPortions = basePortions * shoppingMultiplier * dayCount
+        acc[recipe.id] = (acc[recipe.id] ?? 0) + requestedPortions
         return acc
       }, {} as Record<number, number>)
       const recipeIds = Object.keys(servings).map((id) => Number(id))
@@ -368,6 +419,7 @@ function KitchenOSApp({ user, onLogout }: { user: AuthUser; onLogout: () => void
       const generatedAt = result.generatedAt || new Date().toISOString()
       const signature = buildPlannerSignature(plannerRecipes)
       setShoppingListMeta({ signature, generatedAt, isStale: false })
+      setNextAutoRetryAt(null)
       if (!options?.silent) {
         setCurrentView('shopping')
         if (result.generationMode === 'fallback') {
@@ -386,6 +438,10 @@ function KitchenOSApp({ user, onLogout }: { user: AuthUser; onLogout: () => void
           : 'Nie udalo sie wygenerowac listy'
       if (message.includes('Nie znaleziono przepis')) {
         mutateRecipes()
+      }
+      if (options?.silent) {
+        lastAutoRequestSignature.current = null
+        setNextAutoRetryAt(Date.now() + 5000)
       }
       if (!options?.silent) {
         showToast(message, 'error')
@@ -406,6 +462,13 @@ function KitchenOSApp({ user, onLogout }: { user: AuthUser; onLogout: () => void
     }
 
     if (!plannerSignature) return
+
+    if (nextAutoRetryAt && nextAutoRetryAt > Date.now()) {
+      const retryTimeout = setTimeout(() => {
+        setNextAutoRetryAt(null)
+      }, Math.max(1, nextAutoRetryAt - Date.now()))
+      return () => clearTimeout(retryTimeout)
+    }
 
     const isUpToDate =
       !!shoppingList &&
@@ -436,6 +499,7 @@ function KitchenOSApp({ user, onLogout }: { user: AuthUser; onLogout: () => void
     shoppingList,
     shoppingListMeta?.signature,
     shoppingListMeta?.isStale,
+    nextAutoRetryAt,
     isGeneratingList,
     handleGenerateShoppingList,
   ])
@@ -539,7 +603,7 @@ function KitchenOSApp({ user, onLogout }: { user: AuthUser; onLogout: () => void
           {currentView === 'planner' && (
             <PlannerView
               plannerRecipes={plannerRecipes}
-              onUpdatePortions={handleUpdatePortions}
+              onUpdateShoppingMultiplier={handleUpdateShoppingMultiplier}
               onRemoveFromPlanner={handleRemoveFromPlanner}
               onGenerateShoppingList={handleGenerateShoppingList}
               isGenerating={isGeneratingList}

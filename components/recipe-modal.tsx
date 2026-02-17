@@ -1,4 +1,4 @@
-﻿'use client'
+'use client'
 
 import { useEffect, useMemo, useState } from 'react'
 import { X, Clock, Users, ExternalLink, UtensilsCrossed, Loader2, PenLine, Info } from 'lucide-react'
@@ -452,16 +452,11 @@ export function RecipeModal({ recipeId, onClose }: RecipeModalProps) {
                           >
                             i
                           </button>
-                          {showNutritionInfo && (
-                            <div className="absolute top-7 right-0 z-20 hidden w-64 rounded-lg border border-border bg-card p-2 text-xs text-muted-foreground shadow-lg sm:block">
-                              {confidenceTooltipText}
-                            </div>
-                          )}
                         </div>
                       )}
                     </div>
                     {showNutritionInfo && confidenceTooltipText && (
-                      <div className="mt-2 rounded-lg border border-border bg-card p-2 text-xs text-muted-foreground sm:hidden">
+                      <div className="mt-2 rounded-lg border border-border bg-card p-2 text-xs text-muted-foreground break-words">
                         {confidenceTooltipText}
                       </div>
                     )}
