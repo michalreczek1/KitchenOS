@@ -147,6 +147,7 @@ function KitchenOSApp({ user, onLogout }: { user: AuthUser; onLogout: () => void
   const [shoppingList, setShoppingList] = useState<ShoppingList | null>(null)
   const [shoppingListMeta, setShoppingListMeta] = useState<ShoppingListMeta | null>(null)
   const [isGeneratingList, setIsGeneratingList] = useState(false)
+  const [nextAutoRetryAt, setNextAutoRetryAt] = useState<number | null>(null)
   const lastAutoRequestSignature = useRef<string | null>(null)
   const { showToast } = useToast()
   const plannerStorageKey = `${PLANNER_STORAGE_KEY}_${user.id}`
@@ -418,6 +419,7 @@ function KitchenOSApp({ user, onLogout }: { user: AuthUser; onLogout: () => void
       const generatedAt = result.generatedAt || new Date().toISOString()
       const signature = buildPlannerSignature(plannerRecipes)
       setShoppingListMeta({ signature, generatedAt, isStale: false })
+      setNextAutoRetryAt(null)
       if (!options?.silent) {
         setCurrentView('shopping')
         if (result.generationMode === 'fallback') {
@@ -436,6 +438,10 @@ function KitchenOSApp({ user, onLogout }: { user: AuthUser; onLogout: () => void
           : 'Nie udalo sie wygenerowac listy'
       if (message.includes('Nie znaleziono przepis')) {
         mutateRecipes()
+      }
+      if (options?.silent) {
+        lastAutoRequestSignature.current = null
+        setNextAutoRetryAt(Date.now() + 5000)
       }
       if (!options?.silent) {
         showToast(message, 'error')
@@ -456,6 +462,13 @@ function KitchenOSApp({ user, onLogout }: { user: AuthUser; onLogout: () => void
     }
 
     if (!plannerSignature) return
+
+    if (nextAutoRetryAt && nextAutoRetryAt > Date.now()) {
+      const retryTimeout = setTimeout(() => {
+        setNextAutoRetryAt(null)
+      }, Math.max(1, nextAutoRetryAt - Date.now()))
+      return () => clearTimeout(retryTimeout)
+    }
 
     const isUpToDate =
       !!shoppingList &&
@@ -486,6 +499,7 @@ function KitchenOSApp({ user, onLogout }: { user: AuthUser; onLogout: () => void
     shoppingList,
     shoppingListMeta?.signature,
     shoppingListMeta?.isStale,
+    nextAutoRetryAt,
     isGeneratingList,
     handleGenerateShoppingList,
   ])
