@@ -30,6 +30,15 @@ import { removeCustomRecipeCategory } from '@/lib/custom-recipe-categories'
 const SHOPPING_LIST_STORAGE_KEY = 'kitchenOS_shopping_list'
 const SHOPPING_META_STORAGE_KEY = 'kitchenOS_shopping_meta'
 const PLANNER_STORAGE_KEY = 'kitchenOS_planner'
+const PLANNER_MIN_PORTIONS = 1
+const PLANNER_MAX_PORTIONS = 500
+
+const clampPortions = (value: number, fallback = PLANNER_MIN_PORTIONS) => {
+  if (!Number.isFinite(value)) return fallback
+  const normalized = Math.round(value)
+  if (normalized < PLANNER_MIN_PORTIONS) return fallback
+  return Math.min(PLANNER_MAX_PORTIONS, normalized)
+}
 
 type ShoppingListMeta = {
   signature: string
@@ -79,7 +88,10 @@ const reconcilePlannerRecipes = (
     const assignedDays = normalizeAssignedDays(planned)
     const merged: PlannerRecipe = {
       ...liveRecipe,
-      portions: planned.portions > 0 ? planned.portions : 2,
+      portions: clampPortions(
+        planned.portions,
+        clampPortions(liveRecipe.base_portions ?? PLANNER_MIN_PORTIONS)
+      ),
       assignedDays,
     }
     if (
@@ -227,7 +239,8 @@ function KitchenOSApp({ user, onLogout }: { user: AuthUser; onLogout: () => void
       if (prev.find((r) => r.id === recipe.id)) {
         return prev
       }
-      return [...prev, { ...recipe, portions: 2, assignedDays: [] }]
+      const initialPortions = clampPortions(recipe.base_portions ?? PLANNER_MIN_PORTIONS)
+      return [...prev, { ...recipe, portions: initialPortions, assignedDays: [] }]
     })
     showToast('Dodano do planera!', 'success')
   }, [showToast])
@@ -235,7 +248,7 @@ function KitchenOSApp({ user, onLogout }: { user: AuthUser; onLogout: () => void
   // Update portions
   const handleUpdatePortions = useCallback((id: number, portions: number) => {
     setPlannerRecipes((prev) =>
-      prev.map((r) => (r.id === id ? { ...r, portions } : r))
+      prev.map((r) => (r.id === id ? { ...r, portions: clampPortions(portions) } : r))
     )
   }, [])
 
@@ -345,18 +358,26 @@ function KitchenOSApp({ user, onLogout }: { user: AuthUser; onLogout: () => void
     try {
       const servings = plannerRecipes.reduce((acc, r) => {
         const dayCount = r.assignedDays && r.assignedDays.length > 0 ? r.assignedDays.length : 1
-        acc[r.id] = (acc[r.id] ?? 0) + r.portions * dayCount
+        const normalizedPortions = clampPortions(r.portions)
+        acc[r.id] = (acc[r.id] ?? 0) + normalizedPortions * dayCount
         return acc
       }, {} as Record<number, number>)
       const recipeIds = Object.keys(servings).map((id) => Number(id))
-      const list = await generateShoppingList(recipeIds, servings)
-      setShoppingList(list)
-      const generatedAt = new Date().toISOString()
+      const result = await generateShoppingList(recipeIds, servings)
+      setShoppingList(result.shoppingList)
+      const generatedAt = result.generatedAt || new Date().toISOString()
       const signature = buildPlannerSignature(plannerRecipes)
       setShoppingListMeta({ signature, generatedAt, isStale: false })
       if (!options?.silent) {
         setCurrentView('shopping')
-        showToast('Lista zakupow wygenerowana!', 'success')
+        if (result.generationMode === 'fallback') {
+          showToast(
+            result.warning || 'Lista zakupow wygenerowana w trybie awaryjnym (bez AI), sprawdz ilosci.',
+            'info'
+          )
+        } else {
+          showToast('Lista zakupow wygenerowana!', 'success')
+        }
       }
     } catch (error) {
       const message =

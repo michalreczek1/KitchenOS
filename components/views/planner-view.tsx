@@ -77,12 +77,22 @@ const getPlannerImage = (recipe: PlannerRecipe) => {
   return recipe.image_url && !isGenericImage ? recipe.image_url : placeholderImage
 }
 
+const normalizeForMatch = (value: string) =>
+  value
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+
 const needsGoogleReconnect = (message: string) => {
-  const value = message.toLowerCase()
+  const value = normalizeForMatch(message)
   if (value.includes('401:')) return true
   if (value.includes('refresh token')) return true
+  if (value.includes('invalid_grant')) return true
+  if (value.includes('unauthorized')) return true
   if (value.includes('google') && value.includes('ponownie')) return true
   if (value.includes('google') && value.includes('oauth')) return true
+  if (value.includes('google') && value.includes('odswiez') && value.includes('token')) return true
+  if (value.includes('brak') && value.includes('polaczenia') && value.includes('google')) return true
   return false
 }
 
@@ -230,6 +240,14 @@ export function PlannerView({
     }
   }
 
+  const handleGoogleReconnectRequired = useCallback(() => {
+    setGoogleStatus({ connected: false })
+    setGoogleCalendars([])
+    setSelectedCalendarId('')
+    hasLoadedCalendars.current = false
+    showToast('Polaczenie Google wygaslo. Kliknij "Polacz Google".', 'info')
+  }, [showToast])
+
   const handleLoadCalendars = useCallback(async () => {
     setIsGoogleBusy(true)
     try {
@@ -245,18 +263,14 @@ export function PlannerView({
           ? error.message
           : 'Nie udalo sie pobrac listy kalendarzy'
       if (needsGoogleReconnect(message)) {
-        setGoogleStatus({ connected: false })
-        setGoogleCalendars([])
-        setSelectedCalendarId('')
-        hasLoadedCalendars.current = false
-        showToast('Polaczenie Google wygaslo. Kliknij "Polacz Google".', 'info')
+        handleGoogleReconnectRequired()
       } else {
         showToast(message, 'error')
       }
     } finally {
       setIsGoogleBusy(false)
     }
-  }, [selectedCalendarId, showToast])
+  }, [handleGoogleReconnectRequired, selectedCalendarId, showToast])
 
   useEffect(() => {
     if (!googleStatus?.connected) return
@@ -272,8 +286,16 @@ export function PlannerView({
       const status = await selectGoogleCalendar(calendarId)
       setGoogleStatus(status)
       showToast('Kalendarz zapisany', 'success')
-    } catch {
-      showToast('Nie udało się zapisać kalendarza', 'error')
+    } catch (error) {
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : 'Nie udalo sie zapisac kalendarza'
+      if (needsGoogleReconnect(message)) {
+        handleGoogleReconnectRequired()
+      } else {
+        showToast(message, 'error')
+      }
     } finally {
       setIsGoogleBusy(false)
     }
@@ -292,8 +314,16 @@ export function PlannerView({
     try {
       const result = await syncGooglePlan(selectedCalendarId, googleEvents)
       showToast(`Zapisano ${result.created} wydarzeń`, 'success')
-    } catch {
-      showToast('Nie udało się zsynchronizować kalendarza', 'error')
+    } catch (error) {
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : 'Nie udalo sie zsynchronizowac kalendarza'
+      if (needsGoogleReconnect(message)) {
+        handleGoogleReconnectRequired()
+      } else {
+        showToast(message, 'error')
+      }
     } finally {
       setIsSyncing(false)
     }
@@ -576,6 +606,14 @@ export function PlannerView({
                 </button>
               ) : (
                 <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleConnectGoogle}
+                    disabled={isGoogleBusy}
+                    className="rounded-full border border-border bg-background px-3 py-2 text-xs font-semibold text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary disabled:opacity-60"
+                  >
+                    {'Połącz ponownie'}
+                  </button>
                   <button
                     type="button"
                     onClick={handleLoadCalendars}

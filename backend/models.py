@@ -2,6 +2,7 @@ import datetime
 from sqlalchemy import (
     Column,
     Integer,
+    Float,
     String,
     Text,
     JSON,
@@ -43,6 +44,34 @@ class RecipeDB(Base):
         DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow
     )
     base_portions = Column(Integer, default=1, nullable=False)
+    servings_unit = Column(String, nullable=False, default="servings")
+    yield_display_label = Column(String, nullable=True)
+    yield_assumption_reason = Column(String, nullable=True)
+    declared_category = Column(String, nullable=True)
+    portion_adjusted_auto = Column(Boolean, nullable=True)
+    portion_adjustment_code = Column(String, nullable=True)
+    portion_profile = Column(String, nullable=True)
+    process_class = Column(String, nullable=True)
+    raw_weight_g = Column(Float, nullable=True)
+    final_weight_estimation_source = Column(String, nullable=True)
+    final_weight_confidence = Column(Float, nullable=True)
+    target_portion_weight_g = Column(Float, nullable=True)
+    original_base_portions = Column(Integer, nullable=True)
+    total_weight_g = Column(Float, nullable=True)
+    portion_weight_g = Column(Float, nullable=True)
+    piece_weight_g = Column(Float, nullable=True)
+    pan_diameter_min_cm = Column(Float, nullable=True)
+    pan_diameter_max_cm = Column(Float, nullable=True)
+    nutrition_protein_g = Column(Float, nullable=True)
+    nutrition_carbs_g = Column(Float, nullable=True)
+    nutrition_fat_g = Column(Float, nullable=True)
+    nutrition_fiber_g = Column(Float, nullable=True)
+    nutrition_glycemic_load = Column(Float, nullable=True)
+    nutrition_calories_kcal = Column(Float, nullable=True)
+    nutrition_source = Column(String, nullable=True)
+    nutrition_confidence_score = Column(Float, nullable=True)
+    nutrition_failure_reason = Column(String, nullable=True)
+    nutrition_generation_mode = Column(String, nullable=True)
 
 
 class RecipeRatingDB(Base):

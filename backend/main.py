@@ -1,15 +1,18 @@
 import os
 import re
+import math
 import requests
 import datetime
 import json
 import uuid
 import secrets
+import unicodedata
 from urllib.parse import urlparse, urlencode
+from dataclasses import dataclass
 from fastapi import FastAPI, HTTPException, Depends, status, Body
 from fastapi.security import OAuth2PasswordBearer
 from pydantic import BaseModel, HttpUrl, Field, EmailStr, ValidationError
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Literal
 from recipe_scrapers import scrape_html
 from groq import Groq
 from jose import jwt, JWTError
@@ -25,6 +28,17 @@ from fastapi.responses import Response, HTMLResponse, RedirectResponse
 from db import SessionLocal
 from models import UserDB, RecipeDB, RecipeRatingDB, PlanDB, ParseLogDB, GoogleCalendarDB
 
+RECIPE_CATEGORY_VALUES = (
+    "obiady",
+    "sniadania",
+    "lunchbox",
+    "salatki",
+    "pieczywo",
+    "desery",
+    "inne",
+)
+RecipeCategoryValue = Literal["obiady", "sniadania", "lunchbox", "salatki", "pieczywo", "desery", "inne"]
+
 
 # Load environment variables from .env file
 load_dotenv()
@@ -35,15 +49,16 @@ logger = logging.getLogger(__name__)
 
 # --- KONFIGURACJA ---
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 client = None
 if not GROQ_API_KEY:
-    logger.warning("GROQ_API_KEY nie jest ustawiony. Endpointy AI bÄdÄ niedostÄpne.")
+    logger.warning("GROQ_API_KEY nie jest ustawiony. Endpointy AI będą niedostępne.")
 else:
     try:
         client = Groq(api_key=GROQ_API_KEY)
     except Exception as e:
-        logger.error(f"BÅÄd inicjalizacji Groq client: {e}")
-        # Fallback - sprÃ³buj bez dodatkowych parametrÃ³w
+        logger.error(f"Błąd inicjalizacji Groq client: {e}")
+        # Fallback - spróbuj bez dodatkowych parametrów
         import groq
 
         client = groq.Groq(api_key=GROQ_API_KEY)
@@ -75,17 +90,17 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    logger.info("ð KitchenOS Backend uruchamia siÄ...")
+    logger.info("🚀 KitchenOS Backend uruchamia się...")
     # Uwaga: w produkcji uruchamiaj migracje Alembic (create_all nie jest zalecane).
     yield
     # Shutdown
-    logger.info("ð KitchenOS Backend wyÅÄcza siÄ...")
+    logger.info("🛑 KitchenOS Backend wyłącza się...")
 
 
 app = FastAPI(
     title="KitchenOS API",
     version="2.0.0",
-    description="Inteligentny system planowania posiÅkÃ³w i zakupÃ³w",
+    description="Inteligentny system planowania posiłków i zakupów",
     lifespan=lifespan,
 )
 
@@ -125,7 +140,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 def get_password_hash(password: str) -> str:
     if _password_too_long(password):
-        raise HTTPException(status_code=400, detail="HasÄ¹âo jest za dÄ¹âugie (limit 72 znaki)")
+        raise HTTPException(status_code=400, detail="Hasło jest za długie (limit 72 znaki)")
     return pwd_context.hash(password)
 
 
@@ -140,7 +155,7 @@ def get_current_user(
 ) -> UserDB:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="NieprawidÅowe dane uwierzytelniajÄce",
+        detail="Nieprawidłowe dane uwierzytelniające",
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
@@ -183,20 +198,20 @@ def decode_google_state_token(state: str) -> int:
     try:
         payload = jwt.decode(state, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
     except JWTError:
-        raise HTTPException(status_code=400, detail="NieprawidÄ¹âowy token stanu OAuth")
+        raise HTTPException(status_code=400, detail="Nieprawidlowy token stanu OAuth")
     user_id = payload.get("sub")
     if not user_id:
-        raise HTTPException(status_code=400, detail="Brak uÄ¹Ä½ytkownika w tokenie OAuth")
+        raise HTTPException(status_code=400, detail="Brak użytkownika w tokenie OAuth")
     try:
         return int(user_id)
     except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail="NieprawidÄ¹âowy identyfikator uÄ¹Ä½ytkownika")
+        raise HTTPException(status_code=400, detail="Nieprawidłowy identyfikator użytkownika")
 
 
 def get_google_token_record(db: Session, user_id: int) -> GoogleCalendarDB:
     record = db.query(GoogleCalendarDB).filter(GoogleCalendarDB.owner_id == user_id).first()
     if not record:
-        raise HTTPException(status_code=400, detail="Brak poÄ¹âÃâ¦czenia z Google Calendar")
+        raise HTTPException(status_code=400, detail="Brak polaczenia z Google Calendar")
     return record
 
 
@@ -204,7 +219,7 @@ def refresh_google_access_token(db: Session, record: GoogleCalendarDB) -> str:
     if record.expires_at and record.expires_at > datetime.datetime.utcnow() + datetime.timedelta(seconds=60):
         return record.access_token
     if not record.refresh_token:
-        raise HTTPException(status_code=401, detail="Brak refresh token. PoÄ¹âÃâ¦cz Google ponownie.")
+        raise HTTPException(status_code=401, detail="Brak refresh token. Polacz Google ponownie.")
 
     ensure_google_config()
     response = requests.post(
@@ -218,7 +233,7 @@ def refresh_google_access_token(db: Session, record: GoogleCalendarDB) -> str:
         timeout=20,
     )
     if not response.ok:
-        raise HTTPException(status_code=502, detail="Nie udaÄ¹âo siÃâ¢ odÄ¹âºwieÄ¹Ä½yÃâ¡ tokenu Google")
+        raise HTTPException(status_code=502, detail="Nie udało się odświeżyć tokenu Google")
     data = response.json()
     record.access_token = data.get("access_token", record.access_token)
     expires_in = data.get("expires_in")
@@ -268,7 +283,7 @@ def require_admin(user: UserDB = Depends(get_current_user)) -> UserDB:
     if not user.is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Brak uprawnieÅ administratora",
+            detail="Brak uprawnien administratora",
         )
     return user
 
@@ -288,7 +303,7 @@ def log_parse_attempt(user_id: int, url: str, status_value: str, error: Optional
         )
         log_db.commit()
     except Exception:
-        logger.error("Nie udaÅo siÄ zapisaÄ logu parsowania", exc_info=True)
+        logger.error("Nie udało się zapisać logu parsowania", exc_info=True)
         log_db.rollback()
     finally:
         log_db.close()
@@ -361,6 +376,8 @@ class RecipeCreateRequest(BaseModel):
     prep_time: Optional[str] = None
     difficulty: Optional[str] = None
     base_portions: Optional[int] = 1
+    servings_unit: Optional[Literal["servings", "people"]] = "servings"
+    declared_category: Optional[RecipeCategoryValue] = None
 
 
 class ChangePasswordRequest(BaseModel):
@@ -431,6 +448,7 @@ class GoogleSyncResponse(BaseModel):
 
 class RecipeInput(BaseModel):
     url: HttpUrl
+    declared_category: Optional[RecipeCategoryValue] = None
 
 
 class RecipeResponse(BaseModel):
@@ -439,6 +457,34 @@ class RecipeResponse(BaseModel):
     url: str
     image_url: Optional[str] = None
     base_portions: int
+    servings_unit: Optional[str] = None
+    declared_category: Optional[RecipeCategoryValue] = None
+    yield_display_label: Optional[str] = None
+    yield_assumption_reason: Optional[str] = None
+    portion_adjusted_auto: Optional[bool] = None
+    portion_adjustment_code: Optional[str] = None
+    portion_profile: Optional[Literal["soup", "main", "dessert_baked", "dessert_dense", "breakfast_sweet", "default"]] = None
+    process_class: Optional[Literal["batter", "hydrate", "roast", "reduce", "unknown"]] = None
+    raw_weight_g: Optional[float] = None
+    final_weight_estimation_source: Optional[Literal["deterministic", "ai", "mixed"]] = None
+    final_weight_confidence: Optional[float] = None
+    target_portion_weight_g: Optional[float] = None
+    original_base_portions: Optional[int] = None
+    total_weight_g: Optional[float] = None
+    portion_weight_g: Optional[float] = None
+    piece_weight_g: Optional[float] = None
+    pan_diameter_min_cm: Optional[float] = None
+    pan_diameter_max_cm: Optional[float] = None
+    nutrition_protein_g: Optional[float] = None
+    nutrition_carbs_g: Optional[float] = None
+    nutrition_fat_g: Optional[float] = None
+    nutrition_fiber_g: Optional[float] = None
+    nutrition_glycemic_load: Optional[float] = None
+    nutrition_calories_kcal: Optional[float] = None
+    nutrition_source: Optional[Literal["page_100g", "ai", "mixed", "fallback", "mixed_fallback"]] = None
+    nutrition_confidence_score: Optional[float] = None
+    nutrition_failure_reason: Optional[str] = None
+    nutrition_generation_mode: Optional[Literal["ai", "fallback", "mixed"]] = None
     created_at: datetime.datetime
     ingredients: List[str] = []
     instructions: Optional[str] = None
@@ -459,7 +505,7 @@ class RecipeRatingResponse(BaseModel):
 
 class RecipeSelection(BaseModel):
     id: int = Field(..., gt=0, description="ID przepisu")
-    portions: int = Field(..., gt=0, le=100, description="Liczba porcji (1-100)")
+    portions: int = Field(..., gt=0, le=500, description="Liczba porcji (1-500)")
 
 
 class PlannerRequest(BaseModel):
@@ -475,6 +521,8 @@ class ShoppingListResponse(BaseModel):
     shopping_list: List[ShoppingCategory]
     total_recipes: int
     generated_at: datetime.datetime
+    generation_mode: Optional[Literal["ai", "fallback"]] = None
+    warning: Optional[str] = None
 
 
 class ParseLogResponse(BaseModel):
@@ -505,53 +553,2186 @@ class AdminStatsResponse(BaseModel):
 
 
 # --- POMOCNICZE FUNKCJE ---
-def extract_portion_count(yield_text: str) -> int:
-    """
-    WyciÄga liczbÄ porcji z tekstu yield.
-    Zawiera zabezpieczenie (Sanity Check) przed pomyleniem gramÃ³w z porcjami.
-    """
-    if not yield_text:
-        return 1
+@dataclass
+class YieldContext:
+    mode: Literal["explicit_servings", "explicit_people", "explicit_pieces", "pan_size", "total_weight_only", "unknown"] = "unknown"
+    base_portions: int = 1
+    servings_unit: Literal["servings", "people"] = "servings"
+    yield_display_label: Optional[str] = None
+    total_weight_g: Optional[float] = None
+    portion_weight_g: Optional[float] = None
+    piece_weight_g: Optional[float] = None
+    pan_diameter_min_cm: Optional[float] = None
+    pan_diameter_max_cm: Optional[float] = None
+    declared_category: Optional[RecipeCategoryValue] = None
+    assumption_reason: Optional[str] = None
 
-    # 1. PrÃ³bujemy dopasowaÄ wzÃ³r: "4 porcji" lub "porcji 4"
-    # Ignorujemy wielkoÅÄ liter (re.IGNORECASE)
-    match = re.search(
-        r"(?:porcj|osÃ³b|serving|porcji?)\D*?(\d+)|(\d+)\D*?(?:porcj|osÃ³b|serving|porcji?)",
-        yield_text,
-        re.IGNORECASE,
+
+@dataclass
+class PortionProfileResult:
+    profile: Literal["soup", "main", "dessert_baked", "dessert_dense", "breakfast_sweet", "default"] = "default"
+    confidence: float = 0.0
+    signals: List[str] = None
+
+    def __post_init__(self):
+        if self.signals is None:
+            self.signals = []
+
+
+@dataclass
+class ProcessClassResult:
+    process_class: Literal["batter", "hydrate", "roast", "reduce", "unknown"] = "unknown"
+    confidence: float = 0.0
+    signals: List[str] = None
+
+    def __post_init__(self):
+        if self.signals is None:
+            self.signals = []
+
+
+@dataclass
+class PortionAdjustmentMetadata:
+    adjusted: bool = False
+    code: Optional[str] = None
+    profile: Optional[str] = None
+    target_portion_weight_g: Optional[float] = None
+    original_base_portions: Optional[int] = None
+
+
+@dataclass
+class WeightEstimationMetadata:
+    process_class: Optional[Literal["batter", "hydrate", "roast", "reduce", "unknown"]] = None
+    raw_weight_g: Optional[float] = None
+    final_weight_estimation_source: Optional[Literal["deterministic", "ai", "mixed"]] = None
+    final_weight_confidence: Optional[float] = None
+
+
+PAN_DIAMETER_PORTION_TABLE = [
+    (16.0, 18.0, 8),
+    (20.0, 22.0, 10),
+    (24.0, 26.0, 12),
+    (28.0, 30.0, 14),
+]
+DEFAULT_PAN_PORTIONS = 12
+RECTANGULAR_PAN_CM2_PER_PORTION = 70.0
+MIN_RECTANGULAR_PAN_PORTIONS = 4
+MAX_RECTANGULAR_PAN_PORTIONS = 20
+YIELD_NUMBER_LIMIT = 200
+SNACK_PORTION_WEIGHT_G = 30.0
+GENERAL_DESSERT_PORTION_WEIGHT_G = 40.0
+SNACK_TOTAL_WEIGHT_THRESHOLD_G = 500.0
+SNACK_MAX_KCAL_PER_PORTION = 800.0
+MEAL_MAX_KCAL_PER_PORTION = 900.0
+MEAL_MIN_PORTION_WEIGHT_G = 140.0
+GL_MAX_DISPLAY_VALUE = 50.0
+PLANNER_MAX_PORTIONS = 500
+PORTION_PROFILE_RULES = {
+    "soup": {"target_g": 350.0, "min_g": 220.0, "max_g": 500.0, "max_kcal": 700.0},
+    "main": {"target_g": 400.0, "min_g": 250.0, "max_g": 550.0, "max_kcal": 1200.0},
+    "breakfast_sweet": {"target_g": 320.0, "min_g": 180.0, "max_g": 420.0, "max_kcal": 950.0},
+    "dessert_baked": {"target_g": 120.0, "min_g": 80.0, "max_g": 180.0, "max_kcal": 700.0},
+    "dessert_dense": {"target_g": 35.0, "min_g": 25.0, "max_g": 60.0, "max_kcal": 350.0},
+    "default": {"target_g": 250.0, "min_g": 150.0, "max_g": 400.0, "max_kcal": 900.0},
+}
+HOUSEHOLD_UNIT_PATTERN = r"(szklank\w*|lyzk\w*|lyzeczk\w*|szt\w*|jaj\w*)"
+LIQUID_DENSITY_G_PER_ML = {
+    "water": 1.0,
+    "milk": 1.03,
+    "yogurt": 1.03,
+    "cream": 1.01,
+    "oil": 0.92,
+    "fruit_puree": 1.0,
+}
+HOUSEHOLD_CONVERSIONS_G = {
+    "glass": {"default": 250.0, "flour": 140.0, "sugar": 200.0},
+    "tbsp": {"default": 15.0, "flour": 10.0, "sugar": 12.0, "oil": 13.5, "butter": 14.0},
+    "tsp": {"default": 5.0, "flour": 3.0, "sugar": 4.0, "oil": 4.5, "butter": 4.5},
+    "egg": {"default": 60.0, "without_shell": 50.0},
+}
+PROCESS_CLASS_YIELD_FACTOR = {
+    "batter": 0.88,
+    "roast": 0.75,
+}
+HYDRATE_MULTIPLIERS = {
+    "grain": 2.7,
+    "pasta": 2.4,
+    "legume": 2.6,
+}
+NUTRITION_SOURCE_VALUES = (
+    "page_100g",
+    "ai",
+    "mixed",
+    "fallback",
+    "mixed_fallback",
+)
+NUTRITION_FAILURE_CODES = (
+    "ai_exception",
+    "ai_invalid_payload",
+    "guardrail_macro_mass",
+    "guardrail_atwater",
+    "fallback_used",
+    "fallback_low_coverage",
+    "fallback_guardrail",
+    "empty_merge",
+)
+FALLBACK_NUTRIENTS_PER_100G = {
+    "flour": {"calories_kcal": 364.0, "protein_g": 10.0, "carbs_g": 76.0, "fat_g": 1.0, "fiber_g": 2.7},
+    "sugar": {"calories_kcal": 400.0, "protein_g": 0.0, "carbs_g": 100.0, "fat_g": 0.0, "fiber_g": 0.0},
+    "egg": {"calories_kcal": 143.0, "protein_g": 12.6, "carbs_g": 1.1, "fat_g": 9.5, "fiber_g": 0.0},
+    "milk": {"calories_kcal": 61.0, "protein_g": 3.2, "carbs_g": 4.8, "fat_g": 3.3, "fiber_g": 0.0},
+    "yogurt": {"calories_kcal": 62.0, "protein_g": 3.5, "carbs_g": 4.7, "fat_g": 3.4, "fiber_g": 0.0},
+    "cream": {"calories_kcal": 292.0, "protein_g": 2.0, "carbs_g": 3.0, "fat_g": 30.0, "fiber_g": 0.0},
+    "oil": {"calories_kcal": 884.0, "protein_g": 0.0, "carbs_g": 0.0, "fat_g": 100.0, "fiber_g": 0.0},
+    "butter": {"calories_kcal": 717.0, "protein_g": 0.9, "carbs_g": 0.1, "fat_g": 81.0, "fiber_g": 0.0},
+    "dry_pasta": {"calories_kcal": 360.0, "protein_g": 13.0, "carbs_g": 74.0, "fat_g": 1.5, "fiber_g": 3.0},
+    "dry_grain": {"calories_kcal": 360.0, "protein_g": 7.0, "carbs_g": 78.0, "fat_g": 1.0, "fiber_g": 2.0},
+    "dry_legume": {"calories_kcal": 340.0, "protein_g": 23.0, "carbs_g": 60.0, "fat_g": 1.5, "fiber_g": 16.0},
+    "fruit_puree": {"calories_kcal": 60.0, "protein_g": 0.6, "carbs_g": 15.0, "fat_g": 0.2, "fiber_g": 1.5},
+    "meat": {"calories_kcal": 180.0, "protein_g": 24.0, "carbs_g": 0.0, "fat_g": 9.0, "fiber_g": 0.0},
+    "vegetable": {"calories_kcal": 40.0, "protein_g": 2.0, "carbs_g": 8.0, "fat_g": 0.3, "fiber_g": 2.0},
+}
+LOW_CONFIDENCE_TERMS = (
+    "dowolna ilosc",
+    "dowolna ilość",
+    "garść",
+    "garsc",
+    "szczypta",
+    "do smaku",
+    "wedlug uznania",
+    "według uznania",
+)
+
+
+def _normalize_text(value: Optional[str]) -> str:
+    if not value:
+        return ""
+    transliterated = str(value).translate(
+        str.maketrans(
+            {
+                "ł": "l",
+                "Ł": "l",
+                "ß": "ss",
+            }
+        )
+    )
+    normalized = unicodedata.normalize("NFKD", transliterated)
+    return "".join(ch for ch in normalized if not unicodedata.combining(ch)).lower()
+
+
+def normalize_declared_category(value: Optional[str]) -> Optional[RecipeCategoryValue]:
+    if not value:
+        return None
+    normalized = _normalize_text(str(value)).strip()
+    if normalized in RECIPE_CATEGORY_VALUES:
+        return normalized  # type: ignore[return-value]
+    return None
+
+
+def _parse_number_token(value: str) -> Optional[float]:
+    if not value:
+        return None
+    try:
+        return float(value.replace(",", "."))
+    except ValueError:
+        return None
+
+
+def _safe_portion_count(value: Optional[float], fallback: int = 1) -> int:
+    if value is None:
+        return fallback
+    count = int(round(value))
+    if count <= 0:
+        return fallback
+    if count > YIELD_NUMBER_LIMIT:
+        return fallback
+    return count
+
+
+def _collect_recipe_tokens(title: str, ingredients: List[str], instructions: List[str]) -> tuple[set[str], str]:
+    blob = _normalize_text(" ".join([title, " ".join(ingredients), " ".join(instructions)]))
+    tokens = set(re.findall(r"[a-z0-9]+", blob))
+    return tokens, blob
+
+
+def _score_prefix(tokens: set[str], profile_scores: dict, profile: str, prefix: str, weight: int, signal: str, signals: List[str]) -> None:
+    if any(token.startswith(prefix) for token in tokens):
+        profile_scores[profile] += weight
+        signals.append(signal)
+
+
+def infer_portion_profile(
+    title: str,
+    ingredients: List[str],
+    instructions: List[str],
+    yield_context: Optional[YieldContext] = None,
+    declared_category: Optional[RecipeCategoryValue] = None,
+) -> PortionProfileResult:
+    tokens, blob = _collect_recipe_tokens(title, ingredients, instructions)
+    scores = {
+        "soup": 0,
+        "main": 0,
+        "breakfast_sweet": 0,
+        "dessert_baked": 0,
+        "dessert_dense": 0,
+    }
+    signals: List[str] = []
+
+    soup_prefixes = ("zupa", "barszcz", "rosol", "bulion", "zurek", "chlodnik", "krupnik")
+    main_prefixes = (
+        "obiad", "danie", "fasol", "kielbas", "boczek", "gulasz", "bigos", "leczo",
+        "kurcz", "indyk", "mieso", "wieprz", "wolow", "ryba", "makaron", "lasagne",
+        "pizza", "zapiekank", "ryz", "kasz", "ziemniak",
+    )
+    dessert_baked_prefixes = (
+        "deser", "ciast", "tort", "szarlotk", "tarta", "babka", "piernik", "drozdz",
+        "muffin", "sernik", "beza", "kruche", "strudel",
+    )
+    dessert_dense_prefixes = ("karmel", "migdal", "orzech", "baton", "kulk", "cukierk", "pral")
+    sweet_prefixes = ("cukier", "miod", "syrop", "czekolad", "kakao", "dzem", "slod")
+    breakfast_sweet_prefixes = ("nalesnik", "pancake", "gofr", "placus", "racuch", "omlet")
+
+    for prefix in soup_prefixes:
+        _score_prefix(tokens, scores, "soup", prefix, 3, f"soup:{prefix}", signals)
+    for prefix in main_prefixes:
+        _score_prefix(tokens, scores, "main", prefix, 2, f"main:{prefix}", signals)
+    for prefix in breakfast_sweet_prefixes:
+        _score_prefix(tokens, scores, "breakfast_sweet", prefix, 3, f"breakfast_sweet:{prefix}", signals)
+    for prefix in dessert_baked_prefixes:
+        _score_prefix(tokens, scores, "dessert_baked", prefix, 3, f"dessert_baked:{prefix}", signals)
+    for prefix in dessert_dense_prefixes:
+        _score_prefix(tokens, scores, "dessert_dense", prefix, 3, f"dessert_dense:{prefix}", signals)
+
+    has_sweet_tokens = any(any(token.startswith(prefix) for token in tokens) for prefix in sweet_prefixes)
+    if has_sweet_tokens:
+        scores["breakfast_sweet"] += 2
+        scores["dessert_baked"] += 1
+        scores["dessert_dense"] += 1
+        signals.append("dessert:sweetness")
+
+    if "zupa krem" in blob:
+        scores["soup"] += 4
+        signals.append("soup:phrase:zupa_krem")
+
+    if any(token.startswith("kremowk") for token in tokens):
+        scores["soup"] = max(0, scores["soup"] - 4)
+        scores["dessert_baked"] += 1
+        signals.append("negate_soup:kremowka")
+
+    if yield_context and yield_context.mode == "pan_size":
+        scores["dessert_baked"] += 2
+        signals.append("dessert_baked:pan_size")
+
+    if any(token.startswith("sniadan") or token.startswith("breakfast") for token in tokens):
+        scores["breakfast_sweet"] += 2
+        signals.append("breakfast:token")
+
+    if any(token.startswith("przekask") or token.startswith("snack") for token in tokens):
+        scores["dessert_dense"] += 2
+        signals.append("dessert_dense:snack_token")
+
+    if declared_category == "sniadania":
+        if has_sweet_tokens or scores["breakfast_sweet"] > 0:
+            scores["breakfast_sweet"] += 4
+            signals.append("declared:sniadania:sweet")
+        else:
+            scores["main"] += 4
+            signals.append("declared:sniadania:main")
+    elif declared_category == "desery":
+        scores["dessert_baked"] += 3
+        signals.append("declared:desery")
+    elif declared_category in ("obiady", "lunchbox"):
+        scores["main"] += 3
+        signals.append(f"declared:{declared_category}:main")
+    elif declared_category in ("salatki", "pieczywo"):
+        scores["main"] += 1
+        signals.append(f"declared:{declared_category}:hint")
+
+    profile_order = ["soup", "main", "breakfast_sweet", "dessert_baked", "dessert_dense"]
+    ranked = sorted(profile_order, key=lambda key: (scores[key], -profile_order.index(key)), reverse=True)
+    best = ranked[0]
+    best_score = scores[best]
+    second_score = scores[ranked[1]] if len(ranked) > 1 else 0
+
+    if best_score <= 0:
+        return PortionProfileResult(profile="default", confidence=0.2, signals=signals)
+
+    confidence = 0.5 + min(0.45, max(0.0, (best_score - second_score) * 0.1))
+    return PortionProfileResult(profile=best, confidence=round(confidence, 2), signals=signals)
+
+
+def _detect_recipe_type(
+    title: str,
+    ingredients: List[str],
+    instructions: List[str],
+    declared_category: Optional[RecipeCategoryValue] = None,
+) -> Literal["soup", "dessert", "main", "default"]:
+    profile = infer_portion_profile(title, ingredients, instructions, declared_category=declared_category).profile
+    if profile == "soup":
+        return "soup"
+    if profile in ("main", "breakfast_sweet"):
+        return "main"
+    if profile in ("dessert_baked", "dessert_dense"):
+        return "dessert"
+    return "default"
+
+
+def _is_snack_like_recipe(
+    title: str,
+    ingredients: List[str],
+    instructions: List[str],
+    declared_category: Optional[RecipeCategoryValue] = None,
+) -> bool:
+    return infer_portion_profile(
+        title,
+        ingredients,
+        instructions,
+        declared_category=declared_category,
+    ).profile == "dessert_dense"
+
+
+def _is_sweet_snack_recipe(title: str, ingredients: List[str], instructions: List[str]) -> bool:
+    blob = _normalize_text(" ".join([title, " ".join(ingredients), " ".join(instructions)]))
+    has_sweet_tokens = any(token in blob for token in ("cukier", "miod", "miód", "karmel", "slodycz", "słodycz"))
+    has_nut_tokens = any(token in blob for token in ("orzech", "migdal", "migdał", "migdal", "migdaly"))
+    has_meal_tokens = any(token in blob for token in ("mieso", "mięso", "kurczak", "ziemniak", "makaron", "ryz", "ryż"))
+    return (has_sweet_tokens and has_nut_tokens) and not has_meal_tokens
+
+
+def _get_snack_standard_portion_weight_g(
+    title: str,
+    ingredients: List[str],
+    instructions: List[str],
+    declared_category: Optional[RecipeCategoryValue] = None,
+) -> float:
+    if infer_portion_profile(
+        title,
+        ingredients,
+        instructions,
+        declared_category=declared_category,
+    ).profile == "dessert_dense":
+        return SNACK_PORTION_WEIGHT_G
+    return GENERAL_DESSERT_PORTION_WEIGHT_G
+
+
+def _get_standard_portion_weight_g(
+    title: str,
+    ingredients: List[str],
+    instructions: List[str],
+    declared_category: Optional[RecipeCategoryValue] = None,
+) -> float:
+    profile = infer_portion_profile(
+        title,
+        ingredients,
+        instructions,
+        declared_category=declared_category,
+    ).profile
+    rules = PORTION_PROFILE_RULES.get(profile) or PORTION_PROFILE_RULES["default"]
+    return float(rules["target_g"])
+
+
+def _map_pan_size_to_portions(min_cm: float, max_cm: float) -> int:
+    avg = (min_cm + max_cm) / 2.0
+    for range_min, range_max, portions in PAN_DIAMETER_PORTION_TABLE:
+        if range_min <= avg <= range_max:
+            return portions
+    return DEFAULT_PAN_PORTIONS
+
+
+def _map_rectangular_pan_to_portions(width_cm: float, height_cm: float) -> int:
+    area_cm2 = max(1.0, width_cm * height_cm)
+    estimated = int(round(area_cm2 / RECTANGULAR_PAN_CM2_PER_PORTION))
+    if estimated <= 0:
+        return DEFAULT_PAN_PORTIONS
+    return max(MIN_RECTANGULAR_PAN_PORTIONS, min(MAX_RECTANGULAR_PAN_PORTIONS, estimated))
+
+
+def _extract_piece_weight_g(norm_text: str) -> Optional[float]:
+    patterns = [
+        r"(?:waga\s*)?(?:do|okolo|ponad|~)?\s*(\d+(?:[.,]\d+)?)\s*g(?:\b|\s)",
+        r"(\d+(?:[.,]\d+)?)\s*g\s*(?:kazd\w*|szt\w*)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, norm_text)
+        if not match:
+            continue
+        value = _parse_number_token(match.group(1))
+        if value is None or value <= 0:
+            continue
+        return round(value, 1)
+    return None
+
+
+def _extract_total_weight_g(norm_text: str) -> Optional[float]:
+    contextual_patterns = [
+        r"(?:liczba\s+porcji|porcji|porcje|yield|servings?)\s*[:\-]?\s*(?:okolo|ponad|do|~)?\s*(\d+(?:[.,]\d+)?)\s*(kg|g)\b",
+        r"(?:okolo|ponad|do|~)?\s*(\d+(?:[.,]\d+)?)\s*(kg|g)\b[^.\n]{0,24}(?:dania|zupy|calosci|calosc)\b",
+    ]
+    matches: List[tuple[str, str]] = []
+    for pattern in contextual_patterns:
+        matches.extend(re.findall(pattern, norm_text))
+
+    totals: List[float] = []
+    for number_raw, unit in matches:
+        value = _parse_number_token(number_raw)
+        if value is None or value <= 0:
+            continue
+        totals.append(value * 1000.0 if unit == "kg" else value)
+
+    # Fallback for short yield labels like "do 500 g".
+    if not totals and len(norm_text.split()) <= 8:
+        bare_match = re.search(
+            r"^(?:liczba\s+porcji\s*[:\-]?\s*)?(?:okolo|ponad|do|~)?\s*(\d+(?:[.,]\d+)?)\s*(kg|g)\b",
+            norm_text,
+        )
+        if bare_match:
+            value = _parse_number_token(bare_match.group(1))
+            unit = bare_match.group(2)
+            if value is not None and value > 0:
+                totals.append(value * 1000.0 if unit == "kg" else value)
+
+    if not totals:
+        return None
+    return round(max(totals), 1)
+
+
+def _line_has_yield_keyword(norm_line: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(liczba porcji|porcj\w*|servings?|dla\s+\d+\s+osob|osob\w*|tortownica|forma|blacha|szt\w*)\b",
+            norm_line,
+        )
     )
 
-    if match:
-        val = match.group(1) if match.group(1) else match.group(2)
-        count = int(val)
 
-        # --- SANITY CHECK ---
-        # JeÅli przepis jest na wiÄcej niÅ¼ 50 osÃ³b, to prawdopodobnie bÅÄd (np. 380g zamiast 4 porcji)
-        if count > 50:
-            print(
-                f"â ï¸ WARNING: Wykryto podejrzanÄ iloÅÄ porcji ({count}) w tekÅcie: '{yield_text}'. ZaÅoÅ¼yÅem, Å¼e to jest waga. ResetujÄ do 1."
+def _line_has_yield_value(norm_line: str) -> bool:
+    return bool(re.search(r"\d", norm_line)) and bool(
+        re.search(r"\b(kg|g|cm|porcj\w*|osob\w*|szt\w*|servings?|people|person)\b", norm_line)
+    )
+
+
+def extract_yield_text_from_text_blob(text_blob: str, raw_fallback: str = "") -> str:
+    lines = [re.sub(r"\s+", " ", line).strip() for line in re.split(r"[\r\n]+", text_blob or "")]
+    lines = [line for line in lines if line]
+    norms = [_normalize_text(line) for line in lines]
+
+    # Primary: keyword + value in one or adjacent lines.
+    for idx, line in enumerate(lines):
+        norm = norms[idx]
+        if _line_has_yield_keyword(norm) and _line_has_yield_value(norm):
+            return line
+        if _line_has_yield_keyword(norm) and idx + 1 < len(lines) and _line_has_yield_value(norms[idx + 1]):
+            return f"{line} {lines[idx + 1]}"
+        if _line_has_yield_value(norm) and idx > 0 and _line_has_yield_keyword(norms[idx - 1]):
+            return f"{lines[idx - 1]} {line}"
+
+    # Secondary: single-line weight labels like "do 500 g".
+    for idx, line in enumerate(lines):
+        norm = norms[idx]
+        if re.match(r"^(?:okolo|ponad|do|~)?\s*\d+(?:[.,]\d+)?\s*(kg|g)\b(?:\s+\w+){0,3}$", norm):
+            return line
+
+    if raw_fallback:
+        norm_fallback = _normalize_text(raw_fallback)
+        if _line_has_yield_keyword(norm_fallback) or _line_has_yield_value(norm_fallback):
+            return raw_fallback
+
+    return ""
+
+
+def extract_yield_text_from_page(scraper: Any, html_content: str) -> str:
+    raw = ""
+    try:
+        raw = (scraper.yields() or "").strip()
+        raw_norm = _normalize_text(raw)
+        if raw and _line_has_yield_keyword(raw_norm) and _line_has_yield_value(raw_norm):
+            return raw
+        if raw and re.match(r"^(?:okolo|ponad|do|~)?\s*\d+(?:[.,]\d+)?\s*(kg|g)\b(?:\s+\w+){0,3}$", raw_norm):
+            return raw
+    except Exception:
+        raw = ""
+
+    try:
+        text_blob = scraper.soup.get_text("\n", strip=True)
+    except Exception:
+        text_blob = re.sub(r"<[^>]+>", " ", html_content or "")
+
+    extracted = extract_yield_text_from_text_blob(text_blob=text_blob, raw_fallback=raw)
+    if extracted:
+        return extracted
+
+    if raw:
+        return raw
+    return ""
+
+
+def _extract_ingredient_weight_breakdown_legacy(ingredients: List[str]) -> dict:
+    total_g = 0.0
+    water_g = 0.0
+    oil_g = 0.0
+    dry_starch_g = 0.0
+
+    for ingredient in ingredients:
+        norm = _normalize_text(ingredient)
+        if not norm:
+            continue
+
+        unit_matches = re.findall(r"(\d+(?:[.,]\d+)?)\s*(kg|g|ml|l)\b", norm)
+        ingredient_weight_g = 0.0
+        if unit_matches:
+            for number_raw, unit in unit_matches:
+                value = _parse_number_token(number_raw)
+                if value is None or value <= 0:
+                    continue
+                if unit in ("kg", "l"):
+                    ingredient_weight_g += value * 1000.0
+                else:
+                    ingredient_weight_g += value
+            total_g += ingredient_weight_g
+
+            if "woda" in norm:
+                water_g += ingredient_weight_g
+            if any(token in norm for token in ("olej", "oliwa", "maslo klarowane", "masło klarowane", "smalec")):
+                oil_g += ingredient_weight_g
+            if any(token in norm for token in ("makaron", "ryz", "kasz", "bulgur", "quinoa")):
+                dry_starch_g += ingredient_weight_g
+            continue
+
+        if "jaj" in norm:
+            eggs_match = re.search(r"(\d+)\s*(?:szt|sztuk|jaj\w*)", norm)
+            if eggs_match:
+                total_g += int(eggs_match.group(1)) * 60.0
+
+    return {
+        "total_g": round(total_g, 1),
+        "water_g": round(water_g, 1),
+        "oil_g": round(oil_g, 1),
+        "dry_starch_g": round(dry_starch_g, 1),
+    }
+
+
+def _infer_process_tags(title: str, ingredients: List[str], instructions: List[str]) -> set[str]:
+    text_blob = _normalize_text(" ".join([title, " ".join(ingredients), " ".join(instructions)]))
+    tags: set[str] = set()
+
+    if re.search(r"\b(karmeliz|reduk|odpar|piec|piekarnik|zapiec)\w*", text_blob):
+        tags.add("reduction")
+    if re.search(r"\b(ugotuj|gotuj|gotowac|wrzacej wodzie|wrzatku)\b", text_blob) and re.search(
+        r"\b(makaron|ryz|kasz|bulgur|quinoa)\b", text_blob
+    ):
+        tags.add("hydration")
+    if re.search(r"\b(smaz|smazenie|podsmaz|fryt)\w*", text_blob):
+        tags.add("frying")
+    return tags
+
+
+def _adjust_weight_for_process(
+    *,
+    total_weight_g: float,
+    title: str,
+    ingredients: List[str],
+    instructions: List[str],
+) -> tuple[float, List[str]]:
+    breakdown = _extract_ingredient_weight_breakdown_legacy(ingredients)
+    process_tags = _infer_process_tags(title, ingredients, instructions)
+    adjusted_weight = float(total_weight_g)
+    assumptions: List[str] = []
+
+    if "reduction" in process_tags and breakdown["water_g"] > 0:
+        retention = 0.05 if "karmel" in _normalize_text(title) else 0.2
+        evaporated = breakdown["water_g"] * (1.0 - retention)
+        adjusted_weight -= evaporated
+        assumptions.append(f"Proces redukcji/pieczenia: odparowano ~{evaporated:.0f} g wody")
+
+    if "frying" in process_tags and breakdown["oil_g"] > 0:
+        retained_oil = breakdown["oil_g"] * 0.1
+        discarded_oil = breakdown["oil_g"] - retained_oil
+        adjusted_weight -= discarded_oil
+        assumptions.append(f"Smażenie: przyjęto absorpcję ~{retained_oil:.0f} g tłuszczu")
+
+    if "hydration" in process_tags and breakdown["dry_starch_g"] > 0:
+        absorbed_water = breakdown["dry_starch_g"] * 1.5
+        adjusted_weight += absorbed_water
+        assumptions.append(f"Hydratacja: dodano ~{absorbed_water:.0f} g wchłoniętej wody")
+
+    adjusted_weight = max(1.0, adjusted_weight)
+    return round(adjusted_weight, 1), assumptions
+
+
+def _estimate_total_weight_from_ingredients_legacy(ingredients: List[str]) -> Optional[float]:
+    breakdown = _extract_ingredient_weight_breakdown_legacy(ingredients)
+    total_g = breakdown["total_g"]
+    if total_g <= 0:
+        return None
+    return round(total_g, 1)
+
+
+def _classify_ingredient_kind(norm: str) -> str:
+    if not norm:
+        return "other"
+    if "woda" in norm:
+        return "water"
+    if any(token in norm for token in ("mleko", "kefir", "napoj")):
+        return "milk"
+    if any(token in norm for token in ("jogurt", "maslank", "maslanka")):
+        return "yogurt"
+    if any(token in norm for token in ("smietan", "kremowk", "kremowka")):
+        return "cream"
+    if any(token in norm for token in ("olej", "oliwa", "smalec", "maslo klarowane", "maslo")):
+        return "oil"
+    if "maka" in norm:
+        return "flour"
+    if any(token in norm for token in ("cukier", "miod", "syrop")):
+        return "sugar"
+    if any(token in norm for token in ("makaron", "lasagn", "nudele", "spaghetti", "pappardelle", "fettuccine")):
+        return "dry_pasta"
+    if any(token in norm for token in ("ryz", "kasz", "kuskus", "bulgur", "quinoa")):
+        return "dry_grain"
+    if any(token in norm for token in ("fasol", "soczew", "ciecierzyc", "groch")) and "such" in norm:
+        return "dry_legume"
+    if "jaj" in norm:
+        return "egg"
+    if any(token in norm for token in ("mango", "mus", "pulpa", "puree", "przecier")):
+        return "fruit_puree"
+    return "other"
+
+
+def _get_household_mass_g(kind: str, unit: str, count: float, norm: str) -> Optional[float]:
+    if count <= 0:
+        return None
+    if unit.startswith("szklank"):
+        if kind == "flour":
+            return count * HOUSEHOLD_CONVERSIONS_G["glass"]["flour"]
+        if kind == "sugar":
+            return count * HOUSEHOLD_CONVERSIONS_G["glass"]["sugar"]
+        if kind == "oil":
+            return count * (HOUSEHOLD_CONVERSIONS_G["glass"]["default"] * LIQUID_DENSITY_G_PER_ML["oil"])
+        if kind in ("milk", "yogurt", "cream", "water", "fruit_puree"):
+            density = LIQUID_DENSITY_G_PER_ML.get(kind, 1.0)
+            return count * (HOUSEHOLD_CONVERSIONS_G["glass"]["default"] * density)
+        return count * HOUSEHOLD_CONVERSIONS_G["glass"]["default"]
+    if unit.startswith("lyzeczk"):
+        if kind == "flour":
+            return count * HOUSEHOLD_CONVERSIONS_G["tsp"]["flour"]
+        if kind == "sugar":
+            return count * HOUSEHOLD_CONVERSIONS_G["tsp"]["sugar"]
+        if kind == "oil":
+            return count * HOUSEHOLD_CONVERSIONS_G["tsp"]["oil"]
+        if kind in ("water", "milk", "yogurt", "cream", "fruit_puree"):
+            density = LIQUID_DENSITY_G_PER_ML.get(kind, 1.0)
+            return count * (5.0 * density)
+        return count * HOUSEHOLD_CONVERSIONS_G["tsp"]["default"]
+    if unit.startswith("lyzk"):
+        if kind == "flour":
+            return count * HOUSEHOLD_CONVERSIONS_G["tbsp"]["flour"]
+        if kind == "sugar":
+            return count * HOUSEHOLD_CONVERSIONS_G["tbsp"]["sugar"]
+        if kind == "oil":
+            return count * HOUSEHOLD_CONVERSIONS_G["tbsp"]["oil"]
+        if kind in ("water", "milk", "yogurt", "cream", "fruit_puree"):
+            density = LIQUID_DENSITY_G_PER_ML.get(kind, 1.0)
+            return count * (15.0 * density)
+        return count * HOUSEHOLD_CONVERSIONS_G["tbsp"]["default"]
+    if unit.startswith("szt") or unit.startswith("jaj"):
+        if kind == "egg":
+            without_shell = "bez skorup" in norm
+            return count * (
+                HOUSEHOLD_CONVERSIONS_G["egg"]["without_shell"]
+                if without_shell
+                else HOUSEHOLD_CONVERSIONS_G["egg"]["default"]
             )
-            return 1
+        return None
+    return None
 
-        return count
 
-    # 2. Fallback: JeÅli nie znalazÅo sÅowa kluczowego, bierze pierwszÄ cyfrÄ
-    match = re.search(r"\d+", yield_text)
-    if match:
-        count = int(match.group())
+def _extract_ingredient_weight_breakdown(ingredients: List[str]) -> dict:
+    total_g = 0.0
+    water_g = 0.0
+    solid_weight_g = 0.0
+    hydrate_grain_dry_g = 0.0
+    hydrate_pasta_dry_g = 0.0
+    hydrate_legume_dry_g = 0.0
+    assumptions: List[str] = []
+    confidence = 1.0
 
-        # Takie samo sprawdzenie bezpieczeÅstwa
-        if count > 50:
-            print(f"â ï¸ WARNING: Fallback wykryÅ duÅ¼Ä liczbÄ ({count}). ResetujÄ do 1.")
-            return 1
+    for ingredient in ingredients:
+        norm = _normalize_text(ingredient)
+        if not norm:
+            continue
+        kind = _classify_ingredient_kind(norm)
+        ingredient_weight_g = 0.0
 
-        return count
+        unit_matches = re.findall(r"(\d+(?:[.,]\d+)?)\s*(kg|g|ml|l)\b", norm)
+        for number_raw, unit in unit_matches:
+            value = _parse_number_token(number_raw)
+            if value is None or value <= 0:
+                continue
+            if unit == "kg":
+                ingredient_weight_g += value * 1000.0
+            elif unit == "g":
+                ingredient_weight_g += value
+            elif unit == "l":
+                density = LIQUID_DENSITY_G_PER_ML.get(kind, 1.0)
+                ingredient_weight_g += value * 1000.0 * density
+            else:
+                density = LIQUID_DENSITY_G_PER_ML.get(kind, 1.0)
+                ingredient_weight_g += value * density
 
-    return 1
+        if ingredient_weight_g <= 0:
+            for number_raw, unit in re.findall(
+                r"(\d+(?:[.,]\d+)?)\s*(szklank\w*|lyzeczk\w*|lyzk\w*|szt\w*|jaj\w*)",
+                norm,
+            ):
+                value = _parse_number_token(number_raw)
+                if value is None:
+                    continue
+                inferred = _get_household_mass_g(kind, unit, value, norm)
+                if inferred is None:
+                    continue
+                ingredient_weight_g += inferred
+            if ingredient_weight_g > 0:
+                confidence = max(0.25, confidence - 0.08)
+                assumptions.append(f"Miary domowe: {ingredient}")
+
+        if ingredient_weight_g <= 0 and kind == "egg":
+            eggs_match = re.search(r"(\d+(?:[.,]\d+)?)\s*(?:szt|sztuk|jaj\w*)", norm)
+            if eggs_match:
+                value = _parse_number_token(eggs_match.group(1))
+                if value is not None and value > 0:
+                    ingredient_weight_g += value * HOUSEHOLD_CONVERSIONS_G["egg"]["default"]
+                    confidence = max(0.25, confidence - 0.06)
+                    assumptions.append(f"Domyslna masa jaj: {ingredient}")
+
+        if ingredient_weight_g <= 0:
+            continue
+
+        total_g += ingredient_weight_g
+        if kind == "water":
+            water_g += ingredient_weight_g
+        else:
+            solid_weight_g += ingredient_weight_g
+
+        if kind == "dry_grain":
+            hydrate_grain_dry_g += ingredient_weight_g
+        elif kind == "dry_pasta":
+            hydrate_pasta_dry_g += ingredient_weight_g
+        elif kind == "dry_legume":
+            hydrate_legume_dry_g += ingredient_weight_g
+
+    return {
+        "total_g": round(total_g, 1),
+        "solid_weight_g": round(solid_weight_g, 1),
+        "water_g": round(water_g, 1),
+        "hydrate_grain_dry_g": round(hydrate_grain_dry_g, 1),
+        "hydrate_pasta_dry_g": round(hydrate_pasta_dry_g, 1),
+        "hydrate_legume_dry_g": round(hydrate_legume_dry_g, 1),
+        "confidence": round(max(0.2, min(1.0, confidence)), 2),
+        "assumptions": assumptions,
+    }
+
+
+def infer_process_class(
+    title: str,
+    ingredients: List[str],
+    instructions: List[str],
+    declared_category: Optional[RecipeCategoryValue] = None,
+) -> ProcessClassResult:
+    tokens, blob = _collect_recipe_tokens(title, ingredients, instructions)
+    scores = {"batter": 0, "hydrate": 0, "roast": 0, "reduce": 0}
+    signals: List[str] = []
+
+    def _add_prefix_score(process: str, prefixes: tuple[str, ...], weight: int, marker: str) -> None:
+        for prefix in prefixes:
+            if any(token.startswith(prefix) for token in tokens):
+                scores[process] += weight
+                signals.append(f"{marker}:{prefix}")
+
+    _add_prefix_score("batter", ("nalesnik", "pancake", "gofr", "placus", "racuch", "omlet"), 3, "batter")
+    _add_prefix_score("hydrate", ("ryz", "kasz", "kuskus", "bulgur", "makaron", "soczew", "fasol"), 2, "hydrate")
+    _add_prefix_score("roast", ("piecze", "grill", "stek", "kurcz", "ryba", "mieso", "schab"), 2, "roast")
+    _add_prefix_score("reduce", ("karmel", "reduk", "odpar", "syrop", "powidl"), 3, "reduce")
+
+    if re.search(r"\b(zalej|zalej wrzatkiem|odcedz|gotuj)\b", blob) and re.search(
+        r"\b(ryz|kasz|kuskus|bulgur|makaron|soczew|fasol)\b",
+        blob,
+    ):
+        scores["hydrate"] += 4
+        signals.append("hydrate:verb")
+
+    if re.search(r"\b(wymieszaj ciasto|roztrzep|usmaz|smaz nale)\b", blob):
+        scores["batter"] += 3
+        signals.append("batter:verb")
+
+    if re.search(r"\b(karmeliz|odparuj|zredukuj)\b", blob):
+        scores["reduce"] += 4
+        signals.append("reduce:verb")
+
+    if declared_category == "sniadania":
+        scores["batter"] += 2
+        signals.append("declared:sniadania")
+    if declared_category in ("obiady", "lunchbox"):
+        scores["roast"] += 1
+        scores["hydrate"] += 1
+        signals.append(f"declared:{declared_category}")
+    if declared_category == "desery":
+        scores["reduce"] += 1
+        scores["batter"] += 1
+        signals.append("declared:desery")
+
+    profile_order = ["batter", "hydrate", "roast", "reduce"]
+    ranked = sorted(profile_order, key=lambda key: (scores[key], -profile_order.index(key)), reverse=True)
+    best = ranked[0]
+    best_score = scores[best]
+    second_score = scores[ranked[1]] if len(ranked) > 1 else 0
+
+    if best_score <= 0:
+        return ProcessClassResult(process_class="unknown", confidence=0.25, signals=signals)
+
+    confidence = 0.45 + min(0.5, max(0.0, (best_score - second_score) * 0.12))
+    return ProcessClassResult(process_class=best, confidence=round(confidence, 2), signals=signals)
+
+
+def estimate_final_weight_deterministic(
+    *,
+    raw_weight_g: float,
+    breakdown: dict,
+    process_result: ProcessClassResult,
+) -> tuple[Optional[float], List[str]]:
+    if raw_weight_g <= 0:
+        return None, []
+
+    process_class = process_result.process_class
+    assumptions: List[str] = []
+    estimated_weight = raw_weight_g
+    dry_total = (
+        float(breakdown.get("hydrate_grain_dry_g") or 0.0)
+        + float(breakdown.get("hydrate_pasta_dry_g") or 0.0)
+        + float(breakdown.get("hydrate_legume_dry_g") or 0.0)
+    )
+
+    if process_class == "batter":
+        estimated_weight = raw_weight_g * PROCESS_CLASS_YIELD_FACTOR["batter"]
+        assumptions.append("Proces BATTER: retention ~88%")
+    elif process_class == "hydrate":
+        if dry_total > 0:
+            hydrated = (
+                raw_weight_g
+                - dry_total
+                + (float(breakdown.get("hydrate_grain_dry_g") or 0.0) * HYDRATE_MULTIPLIERS["grain"])
+                + (float(breakdown.get("hydrate_pasta_dry_g") or 0.0) * HYDRATE_MULTIPLIERS["pasta"])
+                + (float(breakdown.get("hydrate_legume_dry_g") or 0.0) * HYDRATE_MULTIPLIERS["legume"])
+            )
+            estimated_weight = hydrated
+            assumptions.append("Proces HYDRATE: skala dla skladnikow suchych")
+        else:
+            estimated_weight = raw_weight_g * 1.1
+            assumptions.append("Proces HYDRATE: fallback 1.1x")
+    elif process_class == "roast":
+        estimated_weight = raw_weight_g * PROCESS_CLASS_YIELD_FACTOR["roast"]
+        assumptions.append("Proces ROAST: retention ~75%")
+    elif process_class == "reduce":
+        water_g = float(breakdown.get("water_g") or 0.0)
+        if water_g > 0:
+            caramel_signal = any("reduce:karmel" in signal for signal in process_result.signals)
+            retention = 0.05 if caramel_signal else 0.10
+            estimated_weight = raw_weight_g - (water_g * (1.0 - retention))
+            assumptions.append(
+                f"Proces REDUCE: odparowanie wody {int((1.0 - retention) * 100)}%"
+            )
+        else:
+            estimated_weight = raw_weight_g * 0.9
+            assumptions.append("Proces REDUCE: fallback 90%")
+    else:
+        assumptions.append("Proces UNKNOWN: brak korekty")
+
+    solid_weight_g = float(breakdown.get("solid_weight_g") or 0.0)
+    if process_class == "batter":
+        min_batter_weight = raw_weight_g * 0.55
+        if estimated_weight < min_batter_weight:
+            estimated_weight = min_batter_weight
+            assumptions.append("Guardrail BATTER: max utrata 45%")
+    if process_class == "hydrate" and dry_total > 0:
+        min_hydrate_weight = raw_weight_g * 1.5
+        if estimated_weight < min_hydrate_weight:
+            estimated_weight = min_hydrate_weight
+            assumptions.append("Guardrail HYDRATE: min wzrost 1.5x")
+    if solid_weight_g > 0 and estimated_weight < solid_weight_g:
+        estimated_weight = solid_weight_g
+        assumptions.append("Guardrail: masa >= suma skladnikow stalych")
+
+    estimated_weight = max(1.0, estimated_weight)
+    return round(estimated_weight, 1), assumptions
+
+
+def _estimate_total_weight_from_ingredients(ingredients: List[str]) -> tuple[Optional[float], dict]:
+    breakdown = _extract_ingredient_weight_breakdown(ingredients)
+    total_g = float(breakdown.get("total_g") or 0.0)
+    if total_g <= 0:
+        return None, breakdown
+    return round(total_g, 1), breakdown
+
+
+def estimate_total_weight_with_ai(
+    title: str,
+    ingredients: List[str],
+    instructions: List[str],
+    *,
+    process_class_hint: Optional[str] = None,
+    min_weight_g: Optional[float] = None,
+    max_weight_g: Optional[float] = None,
+) -> Optional[float]:
+    if client is None or not ingredients:
+        return None
+
+    prompt = "\n".join(
+        [
+            "Zwroc wylacznie JSON.",
+            "Oszacuj calkowita mase gotowego dania w gramach.",
+            f"title: {title or ''}",
+            f"ingredients: {json.dumps(ingredients, ensure_ascii=False)}",
+            f"instructions: {json.dumps(instructions, ensure_ascii=False)}",
+            f"process_class_hint: {process_class_hint or 'unknown'}",
+            f"min_weight_g: {round(float(min_weight_g), 1) if min_weight_g else 'null'}",
+            f"max_weight_g: {round(float(max_weight_g), 1) if max_weight_g else 'null'}",
+            "",
+            "Wymagany format:",
+            '{ "estimated_total_weight_g": number }',
+            "",
+            "Zasady:",
+            "- liczba >= 0",
+            "- jesli podano min_weight_g i max_weight_g, wynik musi byc w tym zakresie",
+            "- bez komentarzy i dodatkowych pol",
+        ]
+    )
+
+    try:
+        completion = client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model=GROQ_MODEL,
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+        raw = completion.choices[0].message.content or "{}"
+        parsed_raw = json.loads(raw)
+        value = _coerce_nutrition_number(parsed_raw.get("estimated_total_weight_g"))
+        if value is None:
+            return None
+        return round(value, 1)
+    except Exception as exc:
+        logger.warning("Total weight request failed: %s", str(exc))
+        return None
+
+
+def parse_yield_context(
+    yield_text: str,
+    title: str,
+    ingredients: List[str],
+    instructions: List[str],
+    declared_category: Optional[RecipeCategoryValue] = None,
+) -> YieldContext:
+    raw = (yield_text or "").strip()
+    normalized_declared = normalize_declared_category(declared_category)
+    context = YieldContext(yield_display_label=raw or None, declared_category=normalized_declared)
+    if not raw:
+        return context
+
+    norm = _normalize_text(raw)
+
+    people_patterns = [
+        r"(?:dla\s*)?(\d+)\s*(?:osob|osoby|osoba|people|person)\b",
+        r"(?:osob|osoby|osoba|people|person)\s*[:\-]?\s*(\d+)\b",
+    ]
+    for pattern in people_patterns:
+        match = re.search(pattern, norm)
+        if match:
+            count = _safe_portion_count(_parse_number_token(match.group(1)))
+            return YieldContext(
+                mode="explicit_people",
+                base_portions=count,
+                servings_unit="people",
+                yield_display_label=raw,
+            )
+
+    servings_patterns = [
+        r"\b(\d+)\s*(?:porcj\w*|servings?)\b",
+        r"(?:porcj\w*|servings?)\s*[:\-]?\s*(\d+)\b",
+    ]
+    for pattern in servings_patterns:
+        match = re.search(pattern, norm)
+        if match:
+            # Guardrail: "forma 20 x 29 cm" should be interpreted as pan size, not serving count.
+            if re.search(r"\b(?:tortownica|forma|blacha|naczynie|brytfanna)\b", norm) and re.search(r"\bcm\b", norm):
+                continue
+            if re.search(r"\b\d+(?:[.,]\d+)?\s*[x×]\s*\d+(?:[.,]\d+)?\s*cm\b", norm):
+                continue
+            count = _safe_portion_count(_parse_number_token(match.group(1)))
+            if re.search(
+                rf"(?:porcj\w*|servings?)\s*[:\-]?\s*(?:okolo|ponad|do|~)?\s*{count}\s*(?:kg|g)\b",
+                norm,
+            ):
+                continue
+            piece_hint = re.search(
+                rf"\b{count}\s*(?:\w+\s+){{0,2}}(?:szt|sztuk\w*|opon\w*|paczk\w*|kawal\w*|babeczk\w*)\b",
+                norm,
+            )
+            if piece_hint:
+                piece_weight_g = _extract_piece_weight_g(norm)
+                total_weight_g = round(piece_weight_g * count, 1) if piece_weight_g else None
+                return YieldContext(
+                    mode="explicit_pieces",
+                    base_portions=count,
+                    servings_unit="servings",
+                    yield_display_label=raw,
+                    total_weight_g=total_weight_g,
+                    portion_weight_g=piece_weight_g,
+                    piece_weight_g=piece_weight_g,
+                )
+            return YieldContext(
+                mode="explicit_servings",
+                base_portions=count,
+                servings_unit="servings",
+                yield_display_label=raw,
+            )
+
+    piece_patterns = [
+        r"\b(\d+)\s*(?:szt|sztuk\w*|pieces?)\b",
+        r"\b(\d+)\s*(?:\w+\s+){0,2}(?:opon\w*|paczk\w*|kawal\w*|babeczk\w*)\b",
+    ]
+    for pattern in piece_patterns:
+        match = re.search(pattern, norm)
+        if match:
+            count = _safe_portion_count(_parse_number_token(match.group(1)))
+            piece_weight_g = _extract_piece_weight_g(norm)
+            total_weight_g = round(piece_weight_g * count, 1) if piece_weight_g else None
+            return YieldContext(
+                mode="explicit_pieces",
+                base_portions=count,
+                servings_unit="servings",
+                yield_display_label=raw,
+                total_weight_g=total_weight_g,
+                portion_weight_g=piece_weight_g,
+                piece_weight_g=piece_weight_g,
+            )
+
+    rectangular_pan_patterns = [
+        r"(?:tortownica|forma|blacha|naczynie|brytfanna)[^\d]{0,20}(\d{2}(?:[.,]\d+)?)\s*[x×]\s*(\d{2}(?:[.,]\d+)?)\s*cm\b",
+        r"\b(\d{2}(?:[.,]\d+)?)\s*[x×]\s*(\d{2}(?:[.,]\d+)?)\s*cm\b[^\n]{0,24}(?:tortownica|forma|blacha|naczynie|brytfanna)",
+    ]
+    for pattern in rectangular_pan_patterns:
+        match = re.search(pattern, norm)
+        if match:
+            width = _parse_number_token(match.group(1))
+            height = _parse_number_token(match.group(2))
+            if width is None or height is None:
+                continue
+            min_cm = round(min(width, height), 1)
+            max_cm = round(max(width, height), 1)
+            portions = _map_rectangular_pan_to_portions(min_cm, max_cm)
+            return YieldContext(
+                mode="pan_size",
+                base_portions=portions,
+                servings_unit="servings",
+                yield_display_label=raw,
+                pan_diameter_min_cm=min_cm,
+                pan_diameter_max_cm=max_cm,
+                assumption_reason=f"Rectangular pan {min_cm:g}x{max_cm:g} cm mapped to {portions} portions",
+            )
+
+    round_pan_patterns = [
+        r"(?:tortownica|forma|blacha|naczynie|brytfanna)[^\d]{0,20}(\d{2}(?:[.,]\d+)?)(?:\s*[-–]\s*(\d{2}(?:[.,]\d+)?))?\s*cm\b",
+        r"\b(\d{2}(?:[.,]\d+)?)(?:\s*[-–]\s*(\d{2}(?:[.,]\d+)?))?\s*cm\b[^\n]{0,24}(?:tortownica|forma|blacha|naczynie|brytfanna)",
+    ]
+    for pattern in round_pan_patterns:
+        match = re.search(pattern, norm)
+        if match:
+            min_raw = _parse_number_token(match.group(1))
+            max_raw = _parse_number_token(match.group(2) or match.group(1))
+            if min_raw is None or max_raw is None:
+                continue
+            min_cm = float(min_raw)
+            max_cm = float(max_raw)
+            portions = _map_pan_size_to_portions(min_cm, max_cm)
+            return YieldContext(
+                mode="pan_size",
+                base_portions=portions,
+                servings_unit="servings",
+                yield_display_label=raw,
+                pan_diameter_min_cm=min_cm,
+                pan_diameter_max_cm=max_cm,
+                assumption_reason=f"Pan size {min_cm:g}-{max_cm:g} cm mapped to {portions} portions",
+            )
+
+    total_weight_g = _extract_total_weight_g(norm)
+    if total_weight_g:
+        standard_weight_g = _get_standard_portion_weight_g(
+            title,
+            ingredients,
+            instructions,
+            declared_category=normalized_declared,
+        )
+        portions = max(1, round(total_weight_g / standard_weight_g))
+        portion_weight_g = round(total_weight_g / portions, 1)
+        return YieldContext(
+            mode="total_weight_only",
+            base_portions=portions,
+            servings_unit="servings",
+            yield_display_label=raw,
+            declared_category=normalized_declared,
+            total_weight_g=total_weight_g,
+            portion_weight_g=portion_weight_g,
+            assumption_reason=f"Used standard portion weight {standard_weight_g:.0f} g",
+        )
+
+    return context
+
+
+def resolve_yield_context_weights(
+    context: YieldContext,
+    title: str,
+    ingredients: List[str],
+    instructions: List[str],
+) -> tuple[YieldContext, WeightEstimationMetadata]:
+    declared_category = normalize_declared_category(context.declared_category)
+    context.declared_category = declared_category
+    metadata = WeightEstimationMetadata(
+        process_class="unknown",
+        raw_weight_g=None,
+        final_weight_estimation_source=None,
+        final_weight_confidence=None,
+    )
+
+    if context.portion_weight_g and context.total_weight_g:
+        metadata.raw_weight_g = context.total_weight_g
+        metadata.final_weight_estimation_source = "deterministic"
+        metadata.final_weight_confidence = 100.0
+        process_result = infer_process_class(
+            title=title,
+            ingredients=ingredients,
+            instructions=instructions,
+            declared_category=declared_category,
+        )
+        metadata.process_class = process_result.process_class
+        return context, metadata
+
+    total_weight_from_context = context.total_weight_g is not None
+    total_weight_g = context.total_weight_g
+    process_result = infer_process_class(
+        title=title,
+        ingredients=ingredients,
+        instructions=instructions,
+        declared_category=declared_category,
+    )
+    metadata.process_class = process_result.process_class
+    breakdown: dict = {}
+    raw_weight_confidence = 0.0
+
+    deterministic_weight: Optional[float] = None
+    if total_weight_g is None:
+        raw_weight_g, breakdown = _estimate_total_weight_from_ingredients(ingredients)
+        metadata.raw_weight_g = raw_weight_g
+        raw_weight_confidence = float(breakdown.get("confidence") or 0.0)
+        if raw_weight_g is not None:
+            deterministic_weight, assumptions = estimate_final_weight_deterministic(
+                raw_weight_g=raw_weight_g,
+                breakdown=breakdown,
+                process_result=process_result,
+            )
+            if assumptions and not context.assumption_reason:
+                context.assumption_reason = "; ".join(assumptions)
+
+        should_try_ai = (
+            deterministic_weight is None
+            or raw_weight_confidence < 0.55
+            or process_result.process_class == "unknown"
+        )
+
+        ai_weight: Optional[float] = None
+        if should_try_ai:
+            min_weight_g = float(breakdown.get("solid_weight_g") or 1.0) if breakdown else 1.0
+            max_weight_g: Optional[float] = None
+            if raw_weight_g and raw_weight_g > 0:
+                max_weight_g = raw_weight_g * (3.5 if process_result.process_class == "hydrate" else 2.2)
+            ai_weight = estimate_total_weight_with_ai(
+                title,
+                ingredients,
+                instructions,
+                process_class_hint=process_result.process_class,
+                min_weight_g=min_weight_g,
+                max_weight_g=max_weight_g,
+            )
+
+        if deterministic_weight is not None and ai_weight is not None:
+            if deterministic_weight <= 0:
+                total_weight_g = ai_weight
+                metadata.final_weight_estimation_source = "ai"
+            else:
+                diff_ratio = abs(ai_weight - deterministic_weight) / deterministic_weight
+                if diff_ratio <= 0.35:
+                    total_weight_g = round((ai_weight + deterministic_weight) / 2.0, 1)
+                    metadata.final_weight_estimation_source = "mixed"
+                else:
+                    total_weight_g = ai_weight
+                    metadata.final_weight_estimation_source = "ai"
+        elif ai_weight is not None:
+            total_weight_g = ai_weight
+            metadata.final_weight_estimation_source = "ai"
+        else:
+            total_weight_g = deterministic_weight
+            metadata.final_weight_estimation_source = "deterministic"
+    else:
+        metadata.raw_weight_g = total_weight_g
+        metadata.final_weight_estimation_source = "deterministic"
+
+    if total_weight_g is None:
+        return context, metadata
+
+    if breakdown and breakdown.get("solid_weight_g"):
+        total_weight_g = max(float(total_weight_g), float(breakdown.get("solid_weight_g")))
+    total_weight_g = max(1.0, float(total_weight_g))
+
+    source = metadata.final_weight_estimation_source
+    if source == "deterministic":
+        metadata.final_weight_confidence = round(
+            max(45.0, min(95.0, 55.0 + (process_result.confidence * 20.0) + (raw_weight_confidence * 20.0))),
+            1,
+        )
+    elif source == "mixed":
+        metadata.final_weight_confidence = round(
+            max(40.0, min(85.0, 48.0 + (process_result.confidence * 12.0) + (raw_weight_confidence * 15.0))),
+            1,
+        )
+    elif source == "ai":
+        metadata.final_weight_confidence = 45.0
+    else:
+        metadata.final_weight_confidence = None
+
+    portions = max(1, int(context.base_portions or 1))
+    if context.mode == "unknown" and portions <= 1:
+        standard_weight_g = _get_standard_portion_weight_g(
+            title,
+            ingredients,
+            instructions,
+            declared_category=declared_category,
+        )
+        portions = max(1, round(total_weight_g / standard_weight_g))
+        context.base_portions = portions
+        context.mode = "total_weight_only"
+        context.assumption_reason = f"Estimated portions from total weight using standard {standard_weight_g:.0f} g"
+
+    # Guardrail: snacks/desserts should not default to one giant portion.
+    if (
+        context.mode in ("unknown", "total_weight_only")
+        and portions <= 1
+        and total_weight_g >= SNACK_TOTAL_WEIGHT_THRESHOLD_G
+        and _is_snack_like_recipe(
+            title,
+            ingredients,
+            instructions,
+            declared_category=declared_category,
+        )
+    ):
+        standard_snack_portion = _get_snack_standard_portion_weight_g(
+            title,
+            ingredients,
+            instructions,
+            declared_category=declared_category,
+        )
+        portions = max(1, round(total_weight_g / standard_snack_portion))
+        context.base_portions = portions
+        context.mode = "total_weight_only"
+        context.assumption_reason = f"Snack-like recipe: used {standard_snack_portion:.0f} g per portion"
+
+    portion_weight = round(total_weight_g / portions, 1)
+    context.total_weight_g = round(total_weight_g, 1)
+    context.portion_weight_g = portion_weight
+    if context.mode == "unknown" and not context.assumption_reason:
+        context.assumption_reason = "Estimated total and per-portion weight from ingredients"
+    if total_weight_from_context and not context.assumption_reason:
+        context.assumption_reason = "Used total weight provided by recipe yield"
+    return context, metadata
+
+
+def extract_portion_count(yield_text: str) -> int:
+    context = parse_yield_context(yield_text, "", [], [])
+    return max(1, int(context.base_portions or 1))
+
+
+def detect_servings_unit(text: Optional[str]) -> str:
+    context = parse_yield_context(text or "", "", [], [])
+    return context.servings_unit
+
+
+def normalize_servings_unit(value: Optional[str]) -> str:
+    if value == "people":
+        return "people"
+    return "servings"
+
+
+def _coerce_nutrition_number(value: Any) -> Optional[float]:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        result = float(value)
+    elif isinstance(value, str):
+        normalized = value.strip().replace(",", ".")
+        if not normalized:
+            return None
+        try:
+            result = float(normalized)
+        except ValueError:
+            return None
+    else:
+        return None
+
+    if result < 0:
+        return None
+    return round(result, 1)
+
+
+def _parse_nutrition_payload(payload: dict) -> Optional[dict]:
+    keys = ("protein_g", "carbs_g", "fat_g", "fiber_g", "glycemic_load", "calories_kcal")
+    parsed = {}
+    for key in keys:
+        value = _coerce_nutrition_number(payload.get(key))
+        if value is None:
+            return None
+        parsed[key] = value
+    return parsed
+
+
+def _extract_kcal_value(value: str) -> Optional[float]:
+    norm = _normalize_text(value)
+    kcal_match = re.search(r"(\d+(?:[.,]\d+)?)\s*kcal", norm)
+    if kcal_match:
+        return _coerce_nutrition_number(kcal_match.group(1))
+    return None
+
+
+def _extract_gram_value(value: str) -> Optional[float]:
+    norm = _normalize_text(value)
+    gram_match = re.search(r"(\d+(?:[.,]\d+)?)\s*g\b", norm)
+    if gram_match:
+        return _coerce_nutrition_number(gram_match.group(1))
+    return _coerce_nutrition_number(value)
+
+
+def extract_nutrition_per_100g_from_page(scraper: Any, html_content: str) -> dict:
+    parsed: dict = {}
+
+    try:
+        nutrients = scraper.nutrients() or {}
+    except Exception:
+        nutrients = {}
+
+    for key, raw_value in nutrients.items():
+        key_norm = _normalize_text(str(key))
+        value_text = str(raw_value or "")
+
+        if any(token in key_norm for token in ("calories", "kalori", "energia", "energetyczna", "energy")):
+            kcal = _extract_kcal_value(value_text)
+            if kcal is not None:
+                parsed["calories_kcal"] = kcal
+            continue
+        if any(token in key_norm for token in ("carbohydrate", "weglowodan", "carbs")):
+            carbs = _extract_gram_value(value_text)
+            if carbs is not None:
+                parsed["carbs_g"] = carbs
+            continue
+        if any(token in key_norm for token in ("protein", "bialko")):
+            protein = _extract_gram_value(value_text)
+            if protein is not None:
+                parsed["protein_g"] = protein
+            continue
+        if any(token in key_norm for token in ("fat", "tluszcz", "tluszcze")):
+            fat = _extract_gram_value(value_text)
+            if fat is not None:
+                parsed["fat_g"] = fat
+            continue
+        if any(token in key_norm for token in ("fiber", "fibre", "blonnik")):
+            fiber = _extract_gram_value(value_text)
+            if fiber is not None:
+                parsed["fiber_g"] = fiber
+
+    if parsed:
+        return parsed
+
+    try:
+        text_source = scraper.soup.get_text(" ", strip=True)
+    except Exception:
+        text_source = html_content or ""
+    normalized_text = _normalize_text(text_source)
+    section_match = re.search(r"w\s*100\s*g(.{0,900})", normalized_text)
+    if not section_match:
+        return parsed
+    section = section_match.group(1)
+
+    energy_match = re.search(
+        r"(?:wartosc\s*energetyczna|energia|energy)[^0-9]{0,40}(\d+(?:[.,]\d+)?)\s*kcal",
+        section,
+    )
+    if energy_match:
+        value = _coerce_nutrition_number(energy_match.group(1))
+        if value is not None:
+            parsed["calories_kcal"] = value
+
+    carbs_match = re.search(r"(?:weglowodany|carbohydrate|carbs)[^0-9]{0,30}(\d+(?:[.,]\d+)?)\s*g\b", section)
+    if carbs_match:
+        value = _coerce_nutrition_number(carbs_match.group(1))
+        if value is not None:
+            parsed["carbs_g"] = value
+
+    protein_match = re.search(r"(?:bialko|protein)[^0-9]{0,30}(\d+(?:[.,]\d+)?)\s*g\b", section)
+    if protein_match:
+        value = _coerce_nutrition_number(protein_match.group(1))
+        if value is not None:
+            parsed["protein_g"] = value
+
+    fat_match = re.search(r"(?:tluszcz\w*|fat)[^0-9]{0,30}(\d+(?:[.,]\d+)?)\s*g\b", section)
+    if fat_match:
+        value = _coerce_nutrition_number(fat_match.group(1))
+        if value is not None:
+            parsed["fat_g"] = value
+
+    fiber_match = re.search(r"(?:blonnik|fiber|fibre)[^0-9]{0,30}(\d+(?:[.,]\d+)?)\s*g\b", section)
+    if fiber_match:
+        value = _coerce_nutrition_number(fiber_match.group(1))
+        if value is not None:
+            parsed["fiber_g"] = value
+
+    return parsed
+
+
+def convert_nutrition_per_100g_to_portion(per_100g: dict, portion_weight_g: Optional[float]) -> dict:
+    if not per_100g or not portion_weight_g or portion_weight_g <= 0:
+        return {}
+    ratio = portion_weight_g / 100.0
+    converted: dict = {}
+    for key in ("calories_kcal", "protein_g", "carbs_g", "fat_g", "fiber_g"):
+        value = _coerce_nutrition_number(per_100g.get(key))
+        if value is None:
+            continue
+        converted[key] = round(value * ratio, 1)
+    return converted
+
+
+def estimate_nutrition_with_ai(
+    *,
+    title: str,
+    ingredients: List[str],
+    instructions: List[str],
+    base_portions: int,
+    portion_weight_g: Optional[float],
+) -> tuple[Optional[dict], Optional[str]]:
+    if client is None:
+        return None, "ai_exception"
+    if not ingredients:
+        return None, "ai_invalid_payload"
+
+    portions = max(1, int(base_portions or 1))
+    prompt = "\n".join(
+        [
+            "Zwróć WYŁĄCZNIE poprawny JSON.",
+            "Jesteś dietetykiem klinicznym i analitykiem procesów kulinarnych.",
+            "Oblicz SZACUNKOWE wartości odżywcze NA 1 PORCJĘ.",
+            f"title: {title or ''}",
+            f"portions: {portions}",
+            f"portion_weight_g: {portion_weight_g if portion_weight_g else 'null'}",
+            f"ingredients: {json.dumps(ingredients, ensure_ascii=False)}",
+            f"instructions: {json.dumps(instructions, ensure_ascii=False)}",
+            "",
+            "Wymagany format:",
+            "{",
+            '  "protein_g": number,',
+            '  "carbs_g": number,',
+            '  "fat_g": number,',
+            '  "fiber_g": number,',
+            '  "glycemic_load": number,',
+            '  "calories_kcal": number',
+            "}",
+            "",
+            "Zasady analityczne:",
+            "- Uwzględnij proces: redukcja/odparowanie, hydratacja, smażenie",
+            "- Wszystkie wartości >= 0",
+            "- liczby, nie stringi",
+            "- zaokrąglij do 1 miejsca po przecinku",
+        ]
+    )
+
+    try:
+        completion = client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model=GROQ_MODEL,
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+        raw = completion.choices[0].message.content or "{}"
+        parsed_raw = json.loads(raw)
+        parsed = _parse_nutrition_payload(parsed_raw)
+        if not parsed:
+            logger.warning("Nutrition request returned invalid payload")
+            return None, "ai_invalid_payload"
+        return parsed, None
+    except Exception as exc:
+        logger.warning("Nutrition request failed: %s", str(exc))
+        return None, "ai_exception"
+
+
+def _estimate_glycemic_index(title: str, ingredients: List[str], instructions: List[str]) -> float:
+    blob = _normalize_text(" ".join([title, " ".join(ingredients), " ".join(instructions)]))
+    high_tokens = ("cukier", "maka pszenna", "maka", "bialy ryz", "syrop", "slodycz", "slodk")
+    medium_tokens = ("pelnoziarn", "makaron", "sok", "kasz")
+    low_tokens = ("straczk", "warzyw", "bialko", "tluszcz", "orzech", "migdal")
+
+    if any(token in blob for token in high_tokens):
+        return 72.0
+    if any(token in blob for token in medium_tokens):
+        return 62.0
+    if any(token in blob for token in low_tokens):
+        return 45.0
+    return 55.0
+
+
+def _estimate_glycemic_load_fallback(
+    *,
+    title: str,
+    ingredients: List[str],
+    instructions: List[str],
+    carbs_g: Optional[float],
+    fiber_g: Optional[float],
+) -> Optional[float]:
+    carbs = _coerce_nutrition_number(carbs_g)
+    if carbs is None:
+        return None
+    fiber = _coerce_nutrition_number(fiber_g) or 0.0
+    net_carbs = max(0.0, carbs - fiber)
+    gi = _estimate_glycemic_index(title, ingredients, instructions)
+    return round((gi * net_carbs) / 100.0, 1)
+
+
+def _contains_low_confidence_terms(ingredients: List[str], instructions: List[str]) -> bool:
+    text_blob = _normalize_text(" ".join(ingredients + instructions))
+    return any(term in text_blob for term in LOW_CONFIDENCE_TERMS)
+
+
+def _apply_nutrition_guardrails_with_reason(
+    nutrition: Optional[dict],
+    portion_weight_g: Optional[float],
+) -> tuple[Optional[dict], Optional[str]]:
+    if not nutrition:
+        return None, "empty_merge"
+
+    protein = _coerce_nutrition_number(nutrition.get("protein_g")) or 0.0
+    carbs = _coerce_nutrition_number(nutrition.get("carbs_g")) or 0.0
+    fat = _coerce_nutrition_number(nutrition.get("fat_g")) or 0.0
+    fiber = _coerce_nutrition_number(nutrition.get("fiber_g")) or 0.0
+    calories = _coerce_nutrition_number(nutrition.get("calories_kcal"))
+    glycemic_load = _coerce_nutrition_number(nutrition.get("glycemic_load"))
+
+    if fiber > carbs:
+        fiber = carbs
+    net_carbs = max(0.0, carbs - fiber)
+    if glycemic_load is not None and net_carbs >= 0 and glycemic_load > net_carbs:
+        glycemic_load = round(net_carbs, 1)
+    if glycemic_load is not None and glycemic_load > GL_MAX_DISPLAY_VALUE:
+        glycemic_load = round(GL_MAX_DISPLAY_VALUE, 1)
+
+    # Guardrail: sum of macros cannot exceed portion mass by a meaningful margin.
+    if portion_weight_g and portion_weight_g > 0:
+        macro_mass = protein + carbs + fat + fiber
+        if macro_mass > portion_weight_g * 1.05:
+            return None, "guardrail_macro_mass"
+
+    # Guardrail: Atwater consistency when calories and fat are available.
+    if calories is not None and fat > 0:
+        atwater = (protein * 4.0) + (carbs * 4.0) + (fat * 9.0)
+        if atwater > 0:
+            rel_diff = abs(calories - atwater) / atwater
+            if rel_diff > 0.55:
+                return None, "guardrail_atwater"
+
+    return {
+        "protein_g": round(protein, 1),
+        "carbs_g": round(carbs, 1),
+        "fat_g": round(fat, 1),
+        "fiber_g": round(fiber, 1),
+        "glycemic_load": round(glycemic_load, 1) if glycemic_load is not None else None,
+        "calories_kcal": calories,
+    }, None
+
+
+def _apply_nutrition_guardrails(
+    nutrition: Optional[dict], portion_weight_g: Optional[float]
+) -> Optional[dict]:
+    guarded, _ = _apply_nutrition_guardrails_with_reason(
+        nutrition=nutrition,
+        portion_weight_g=portion_weight_g,
+    )
+    return guarded
+
+
+def _compute_nutrition_confidence_score(
+    *,
+    nutrition_source: Optional[str],
+    ingredients: List[str],
+    instructions: List[str],
+    portion_weight_g: Optional[float],
+) -> Optional[float]:
+    if not nutrition_source:
+        return None
+    base_score = 35.0
+    if nutrition_source == "page_100g":
+        base_score = 100.0
+    elif nutrition_source == "mixed":
+        base_score = 70.0
+    elif nutrition_source == "ai":
+        base_score = 35.0
+    elif nutrition_source == "mixed_fallback":
+        base_score = 60.0
+    elif nutrition_source == "fallback":
+        base_score = 45.0
+
+    if _contains_low_confidence_terms(ingredients, instructions):
+        base_score -= 30.0
+    if not portion_weight_g or portion_weight_g <= 0:
+        base_score -= 10.0
+
+    return round(max(5.0, min(100.0, base_score)), 1)
+
+
+def _get_portion_profile_rules(profile: str) -> dict:
+    return PORTION_PROFILE_RULES.get(profile) or PORTION_PROFILE_RULES["default"]
+
+
+def _rebalance_portions_by_profile_if_needed(
+    *,
+    context: YieldContext,
+    title: str,
+    ingredients: List[str],
+    instructions: List[str],
+    nutrition_per_portion: Optional[dict],
+) -> PortionAdjustmentMetadata:
+    declared_category = normalize_declared_category(context.declared_category)
+    profile_result = infer_portion_profile(
+        title=title,
+        ingredients=ingredients,
+        instructions=instructions,
+        yield_context=context,
+        declared_category=declared_category,
+    )
+    profile = profile_result.profile
+    rules = _get_portion_profile_rules(profile)
+    metadata = PortionAdjustmentMetadata(
+        adjusted=False,
+        code=None,
+        profile=profile,
+        target_portion_weight_g=float(rules["target_g"]),
+        original_base_portions=max(1, int(context.base_portions or 1)),
+    )
+
+    total_weight_g = context.total_weight_g
+    if total_weight_g is None or total_weight_g <= 0:
+        return metadata
+
+    current_portions = max(1, int(context.base_portions or 1))
+    current_portion_weight = total_weight_g / current_portions
+    calories = _coerce_nutrition_number((nutrition_per_portion or {}).get("calories_kcal"))
+
+    if context.mode == "explicit_pieces" and context.piece_weight_g:
+        piece_absurd = (
+            current_portion_weight > (float(rules["max_g"]) * 2.0)
+            or current_portion_weight < (float(rules["min_g"]) * 0.5)
+        )
+        if not piece_absurd:
+            return metadata
+
+    if context.mode in ("explicit_servings", "explicit_people"):
+        hard_weight_absurd = (
+            current_portion_weight < (float(rules["min_g"]) * 0.6)
+            or current_portion_weight > (float(rules["max_g"]) * 2.0)
+        )
+        hard_calories_absurd = (
+            calories is not None
+            and calories > (float(rules["max_kcal"]) * 1.6)
+        )
+        if not (hard_weight_absurd or hard_calories_absurd):
+            return metadata
+
+    weight_out_of_range = (
+        current_portion_weight < float(rules["min_g"])
+        or current_portion_weight > float(rules["max_g"])
+    )
+    calories_out_of_range = (
+        calories is not None and calories > float(rules["max_kcal"])
+    )
+    if not (weight_out_of_range or calories_out_of_range):
+        return metadata
+
+    target_weight_g = float(rules["target_g"])
+    target_portions = max(1, int(round(total_weight_g / target_weight_g)))
+    target_portions = min(PLANNER_MAX_PORTIONS, target_portions)
+
+    if target_portions == current_portions:
+        if current_portion_weight > float(rules["max_g"]):
+            target_portions = min(PLANNER_MAX_PORTIONS, current_portions + 1)
+        elif current_portion_weight < float(rules["min_g"]) and current_portions > 1:
+            target_portions = max(1, current_portions - 1)
+
+    if target_portions == current_portions:
+        return metadata
+
+    context.base_portions = target_portions
+    context.portion_weight_g = round(total_weight_g / target_portions, 1)
+    context.mode = "total_weight_only"
+
+    code = "weight_out_of_range"
+    if calories_out_of_range:
+        code = "calories_out_of_range"
+    context.assumption_reason = (
+        f"Auto-adjusted [{code}] profile={profile} "
+        f"target~{target_weight_g:.0f} g ({current_portions}->{target_portions})"
+    )
+
+    metadata.adjusted = True
+    metadata.code = code
+    return metadata
+
+
+def _rebalance_portions_for_dense_snack_if_needed(
+    *,
+    context: YieldContext,
+    title: str,
+    ingredients: List[str],
+    instructions: List[str],
+    nutrition_per_portion: Optional[dict],
+) -> bool:
+    calories = _coerce_nutrition_number((nutrition_per_portion or {}).get("calories_kcal"))
+    if calories is None:
+        return False
+
+    recipe_type = _detect_recipe_type(title, ingredients, instructions)
+    snack_like = _is_snack_like_recipe(title, ingredients, instructions) or _is_sweet_snack_recipe(
+        title, ingredients, instructions
+    )
+    if not (recipe_type == "dessert" or snack_like):
+        return False
+    if calories <= SNACK_MAX_KCAL_PER_PORTION:
+        return False
+
+    total_weight_g = context.total_weight_g
+    if total_weight_g is None or total_weight_g <= 0:
+        return False
+
+    current_portions = max(1, int(context.base_portions or 1))
+    standard_portion_g = _get_snack_standard_portion_weight_g(title, ingredients, instructions)
+    target_portions = max(current_portions, round(total_weight_g / standard_portion_g))
+    if target_portions <= current_portions:
+        return False
+
+    context.base_portions = target_portions
+    context.portion_weight_g = round(total_weight_g / target_portions, 1)
+    context.mode = "total_weight_only"
+    context.assumption_reason = (
+        f"Auto-correction: {calories:.0f} kcal/portion too high, "
+        f"set ~{standard_portion_g:.0f} g per portion ({target_portions} portions)"
+    )
+    return True
+
+
+def _rebalance_portions_for_meal_if_needed(
+    *,
+    context: YieldContext,
+    title: str,
+    ingredients: List[str],
+    instructions: List[str],
+    nutrition_per_portion: Optional[dict],
+) -> bool:
+    recipe_type = _detect_recipe_type(title, ingredients, instructions)
+    if recipe_type not in ("soup", "main"):
+        return False
+
+    total_weight_g = context.total_weight_g
+    if total_weight_g is None or total_weight_g <= 0:
+        return False
+
+    current_portions = max(1, int(context.base_portions or 1))
+    current_portion_weight = total_weight_g / current_portions
+    calories = _coerce_nutrition_number((nutrition_per_portion or {}).get("calories_kcal"))
+
+    standard_portion_g = DEFAULT_PORTION_WEIGHT_BY_TYPE_G.get(recipe_type, DEFAULT_PORTION_WEIGHT_BY_TYPE_G["main"])
+    oversized = current_portion_weight > (standard_portion_g * 1.6)
+    undersized = current_portions > 1 and current_portion_weight < MEAL_MIN_PORTION_WEIGHT_G
+    too_many_calories = calories is not None and calories > MEAL_MAX_KCAL_PER_PORTION
+
+    if not (oversized or undersized or too_many_calories):
+        return False
+
+    target_portions = max(1, round(total_weight_g / standard_portion_g))
+    if target_portions == current_portions:
+        return False
+
+    context.base_portions = target_portions
+    context.portion_weight_g = round(total_weight_g / target_portions, 1)
+    context.mode = "total_weight_only"
+    context.assumption_reason = (
+        f"Auto-correction meal: set ~{standard_portion_g:.0f} g per portion ({target_portions} portions)"
+    )
+    return True
+
+
+def merge_nutrition_sources(
+    page_nutrition_per_portion: dict,
+    ai_nutrition_per_portion: Optional[dict],
+) -> tuple[Optional[dict], Optional[str]]:
+    keys = ("protein_g", "carbs_g", "fat_g", "fiber_g", "glycemic_load", "calories_kcal")
+    merged: dict = {}
+    used_page = False
+    used_ai = False
+
+    for key in keys:
+        page_value = _coerce_nutrition_number(page_nutrition_per_portion.get(key))
+        if page_value is not None:
+            merged[key] = page_value
+            used_page = True
+            continue
+        ai_value = _coerce_nutrition_number((ai_nutrition_per_portion or {}).get(key))
+        if ai_value is not None:
+            merged[key] = ai_value
+            used_ai = True
+
+    if not merged:
+        return None, None
+
+    if used_page and used_ai:
+        source = "mixed"
+    elif used_page:
+        source = "page_100g"
+    elif used_ai:
+        source = "ai"
+    else:
+        source = None
+
+    return merged, source
+
+
+def _fallback_profile_nutrients(profile: str) -> dict:
+    if profile == "dessert_dense":
+        return {"calories_kcal": 165.0, "protein_g": 3.0, "carbs_g": 16.0, "fat_g": 9.0, "fiber_g": 1.5}
+    if profile == "dessert_baked":
+        return {"calories_kcal": 240.0, "protein_g": 5.0, "carbs_g": 31.0, "fat_g": 10.0, "fiber_g": 2.0}
+    if profile == "breakfast_sweet":
+        return {"calories_kcal": 290.0, "protein_g": 9.0, "carbs_g": 36.0, "fat_g": 10.0, "fiber_g": 2.0}
+    if profile == "soup":
+        return {"calories_kcal": 220.0, "protein_g": 10.0, "carbs_g": 20.0, "fat_g": 9.0, "fiber_g": 3.0}
+    if profile == "main":
+        return {"calories_kcal": 450.0, "protein_g": 24.0, "carbs_g": 40.0, "fat_g": 20.0, "fiber_g": 6.0}
+    return {"calories_kcal": 320.0, "protein_g": 14.0, "carbs_g": 32.0, "fat_g": 14.0, "fiber_g": 4.0}
+
+
+def _fallback_kind_for_ingredient(norm: str) -> str:
+    kind = _classify_ingredient_kind(norm)
+    if kind == "oil" and "maslo" in norm:
+        return "butter"
+    if kind in ("flour", "sugar", "egg", "milk", "yogurt", "cream", "oil", "butter", "dry_pasta", "dry_grain", "dry_legume", "fruit_puree"):
+        return kind
+    if any(token in norm for token in ("kurcz", "mieso", "wolow", "wieprz", "indyk", "kielbas", "boczek", "ryb")):
+        return "meat"
+    return "vegetable"
+
+
+def _estimate_nutrition_deterministic_fallback(
+    *,
+    title: str,
+    ingredients: List[str],
+    instructions: List[str],
+    base_portions: int,
+    portion_weight_g: Optional[float],
+    declared_category: Optional[RecipeCategoryValue],
+) -> tuple[Optional[dict], Optional[str], Optional[float], Optional[str], Optional[str]]:
+    portions = max(1, int(base_portions or 1))
+    totals = {"calories_kcal": 0.0, "protein_g": 0.0, "carbs_g": 0.0, "fat_g": 0.0, "fiber_g": 0.0}
+    covered_weight_g = 0.0
+    fallback_line_hits = 0
+    ingredient_lines = 0
+
+    for ingredient in ingredients:
+        norm = _normalize_text(ingredient)
+        if not norm:
+            continue
+        ingredient_lines += 1
+        kind = _fallback_kind_for_ingredient(norm)
+        per_100 = FALLBACK_NUTRIENTS_PER_100G.get(kind)
+        if not per_100:
+            continue
+
+        line_weight_g = 0.0
+        for number_raw, unit in re.findall(r"(\d+(?:[.,]\d+)?)\s*(kg|g|ml|l)\b", norm):
+            value = _parse_number_token(number_raw)
+            if value is None or value <= 0:
+                continue
+            if unit == "kg":
+                line_weight_g += value * 1000.0
+            elif unit == "g":
+                line_weight_g += value
+            elif unit == "l":
+                line_weight_g += value * 1000.0 * LIQUID_DENSITY_G_PER_ML.get(kind if kind in LIQUID_DENSITY_G_PER_ML else "water", 1.0)
+            else:
+                line_weight_g += value * LIQUID_DENSITY_G_PER_ML.get(kind if kind in LIQUID_DENSITY_G_PER_ML else "water", 1.0)
+
+        if line_weight_g <= 0:
+            for number_raw, unit in re.findall(
+                r"(\d+(?:[.,]\d+)?)\s*(szklank\w*|lyzeczk\w*|lyzk\w*|szt\w*|jaj\w*)",
+                norm,
+            ):
+                value = _parse_number_token(number_raw)
+                if value is None or value <= 0:
+                    continue
+                inferred = _get_household_mass_g(_classify_ingredient_kind(norm), unit, value, norm)
+                if inferred:
+                    line_weight_g += inferred
+
+        if line_weight_g <= 0 and "jaj" in norm:
+            eggs_match = re.search(r"(\d+(?:[.,]\d+)?)\s*(?:szt|sztuk|jaj\w*)", norm)
+            if eggs_match:
+                value = _parse_number_token(eggs_match.group(1))
+                if value and value > 0:
+                    line_weight_g = value * HOUSEHOLD_CONVERSIONS_G["egg"]["default"]
+
+        if line_weight_g <= 0:
+            continue
+
+        factor = line_weight_g / 100.0
+        totals["calories_kcal"] += per_100["calories_kcal"] * factor
+        totals["protein_g"] += per_100["protein_g"] * factor
+        totals["carbs_g"] += per_100["carbs_g"] * factor
+        totals["fat_g"] += per_100["fat_g"] * factor
+        totals["fiber_g"] += per_100["fiber_g"] * factor
+        covered_weight_g += line_weight_g
+        fallback_line_hits += 1
+
+    coverage_ratio = (fallback_line_hits / ingredient_lines) if ingredient_lines > 0 else 0.0
+    low_coverage = coverage_ratio < 0.45 or fallback_line_hits < 2
+
+    if covered_weight_g <= 0:
+        profile = infer_portion_profile(
+            title=title,
+            ingredients=ingredients,
+            instructions=instructions,
+            declared_category=declared_category,
+        ).profile
+        base_profile = _fallback_profile_nutrients(profile)
+        nutrition = {
+            "calories_kcal": round(base_profile["calories_kcal"], 1),
+            "protein_g": round(base_profile["protein_g"], 1),
+            "carbs_g": round(base_profile["carbs_g"], 1),
+            "fat_g": round(base_profile["fat_g"], 1),
+            "fiber_g": round(base_profile["fiber_g"], 1),
+        }
+        nutrition["glycemic_load"] = _estimate_glycemic_load_fallback(
+            title=title,
+            ingredients=ingredients,
+            instructions=instructions,
+            carbs_g=nutrition.get("carbs_g"),
+            fiber_g=nutrition.get("fiber_g"),
+        )
+        guarded, guardrail_reason = _apply_nutrition_guardrails_with_reason(
+            nutrition=nutrition,
+            portion_weight_g=portion_weight_g,
+        )
+        if not guarded:
+            return None, None, None, "fallback_guardrail" if guardrail_reason else "fallback_used", "fallback"
+        return guarded, "fallback", 22.0, "fallback_low_coverage", "fallback"
+
+    nutrition_per_portion = {
+        "calories_kcal": round(totals["calories_kcal"] / portions, 1),
+        "protein_g": round(totals["protein_g"] / portions, 1),
+        "carbs_g": round(totals["carbs_g"] / portions, 1),
+        "fat_g": round(totals["fat_g"] / portions, 1),
+        "fiber_g": round(totals["fiber_g"] / portions, 1),
+    }
+    nutrition_per_portion["glycemic_load"] = _estimate_glycemic_load_fallback(
+        title=title,
+        ingredients=ingredients,
+        instructions=instructions,
+        carbs_g=nutrition_per_portion.get("carbs_g"),
+        fiber_g=nutrition_per_portion.get("fiber_g"),
+    )
+    guarded, guardrail_reason = _apply_nutrition_guardrails_with_reason(
+        nutrition=nutrition_per_portion,
+        portion_weight_g=portion_weight_g,
+    )
+    if not guarded:
+        return None, None, None, "fallback_guardrail" if guardrail_reason else "fallback_used", "fallback"
+
+    confidence = round(max(15.0, min(65.0, 30.0 + (coverage_ratio * 35.0))), 1)
+    failure_reason = "fallback_low_coverage" if low_coverage else "fallback_used"
+    return guarded, "fallback", confidence, failure_reason, "fallback"
+
+
+def apply_nutrition_to_recipe(
+    recipe: RecipeDB,
+    nutrition: Optional[dict],
+    nutrition_source: Optional[str],
+    nutrition_confidence_score: Optional[float],
+    nutrition_generation_mode: Optional[str] = None,
+    nutrition_failure_reason: Optional[str] = None,
+) -> None:
+    recipe.nutrition_protein_g = _coerce_nutrition_number((nutrition or {}).get("protein_g"))
+    recipe.nutrition_carbs_g = _coerce_nutrition_number((nutrition or {}).get("carbs_g"))
+    recipe.nutrition_fat_g = _coerce_nutrition_number((nutrition or {}).get("fat_g"))
+    recipe.nutrition_fiber_g = _coerce_nutrition_number((nutrition or {}).get("fiber_g"))
+    recipe.nutrition_glycemic_load = _coerce_nutrition_number((nutrition or {}).get("glycemic_load"))
+    recipe.nutrition_calories_kcal = _coerce_nutrition_number((nutrition or {}).get("calories_kcal"))
+    recipe.nutrition_source = nutrition_source
+    recipe.nutrition_confidence_score = _coerce_nutrition_number(nutrition_confidence_score)
+    recipe.nutrition_generation_mode = nutrition_generation_mode
+    recipe.nutrition_failure_reason = nutrition_failure_reason
+
+
+def apply_portion_adjustment_to_recipe(
+    recipe: RecipeDB,
+    metadata: PortionAdjustmentMetadata,
+) -> None:
+    recipe.portion_adjusted_auto = bool(metadata.adjusted)
+    recipe.portion_adjustment_code = metadata.code
+    recipe.portion_profile = metadata.profile
+    recipe.target_portion_weight_g = _coerce_nutrition_number(metadata.target_portion_weight_g)
+    recipe.original_base_portions = metadata.original_base_portions
+
+
+def apply_weight_estimation_to_recipe(
+    recipe: RecipeDB,
+    metadata: WeightEstimationMetadata,
+) -> None:
+    recipe.process_class = metadata.process_class
+    recipe.raw_weight_g = _coerce_nutrition_number(metadata.raw_weight_g)
+    recipe.final_weight_estimation_source = metadata.final_weight_estimation_source
+    recipe.final_weight_confidence = _coerce_nutrition_number(metadata.final_weight_confidence)
+
+
+def _estimate_recipe_nutrition_single_attempt(
+    title: str,
+    ingredients: List[str],
+    instructions: List[str],
+    base_portions: int,
+    page_nutrition_per_100g: Optional[dict] = None,
+    portion_weight_g: Optional[float] = None,
+) -> tuple[Optional[dict], Optional[str], Optional[float], Optional[str], Optional[str]]:
+    page_nutrition_per_portion = convert_nutrition_per_100g_to_portion(
+        page_nutrition_per_100g or {}, portion_weight_g
+    )
+    required_keys = ("protein_g", "carbs_g", "fat_g", "fiber_g", "glycemic_load", "calories_kcal")
+    needs_ai = any(key not in page_nutrition_per_portion for key in required_keys)
+
+    ai_nutrition = None
+    ai_failure_reason = None
+    if needs_ai:
+        ai_nutrition, ai_failure_reason = estimate_nutrition_with_ai(
+            title=title,
+            ingredients=ingredients,
+            instructions=instructions,
+            base_portions=base_portions,
+            portion_weight_g=portion_weight_g,
+        )
+
+    merged_nutrition, nutrition_source = merge_nutrition_sources(page_nutrition_per_portion, ai_nutrition)
+    if not merged_nutrition:
+        failure_reason = ai_failure_reason or "empty_merge"
+        return None, None, None, failure_reason, "ai"
+
+    if _coerce_nutrition_number(merged_nutrition.get("glycemic_load")) is None:
+        fallback_gl = _estimate_glycemic_load_fallback(
+            title=title,
+            ingredients=ingredients,
+            instructions=instructions,
+            carbs_g=merged_nutrition.get("carbs_g"),
+            fiber_g=merged_nutrition.get("fiber_g"),
+        )
+        if fallback_gl is not None:
+            merged_nutrition["glycemic_load"] = fallback_gl
+            if nutrition_source == "page_100g":
+                nutrition_source = "mixed"
+            elif nutrition_source is None:
+                nutrition_source = "mixed"
+
+    guarded_nutrition, guardrail_reason = _apply_nutrition_guardrails_with_reason(
+        nutrition=merged_nutrition,
+        portion_weight_g=portion_weight_g,
+    )
+    if not guarded_nutrition:
+        failure_reason = guardrail_reason or ai_failure_reason or "empty_merge"
+        return None, None, None, failure_reason, "ai"
+
+    confidence_score = _compute_nutrition_confidence_score(
+        nutrition_source=nutrition_source,
+        ingredients=ingredients,
+        instructions=instructions,
+        portion_weight_g=portion_weight_g,
+    )
+    generation_mode = "mixed" if nutrition_source in {"page_100g", "mixed"} else "ai"
+    return guarded_nutrition, nutrition_source, confidence_score, None, generation_mode
+
+
+def estimate_recipe_nutrition(
+    title: str,
+    ingredients: List[str],
+    instructions: List[str],
+    base_portions: int,
+    page_nutrition_per_100g: Optional[dict] = None,
+    portion_weight_g: Optional[float] = None,
+    declared_category: Optional[RecipeCategoryValue] = None,
+) -> tuple[Optional[dict], Optional[str], Optional[float], Optional[str], Optional[str]]:
+    last_failure_reason: Optional[str] = None
+    for attempt in range(1, 4):
+        nutrition, nutrition_source, confidence_score, failure_reason, generation_mode = _estimate_recipe_nutrition_single_attempt(
+            title=title,
+            ingredients=ingredients,
+            instructions=instructions,
+            base_portions=base_portions,
+            page_nutrition_per_100g=page_nutrition_per_100g,
+            portion_weight_g=portion_weight_g,
+        )
+        if nutrition:
+            if attempt > 1:
+                logger.info(
+                    "Nutrition retry succeeded on attempt %s for recipe '%s'",
+                    attempt,
+                    title,
+                )
+            return nutrition, nutrition_source, confidence_score, None, generation_mode
+        last_failure_reason = failure_reason
+        logger.warning(
+            "Nutrition attempt %s failed for recipe '%s': %s",
+            attempt,
+            title,
+            failure_reason or "unknown",
+        )
+
+    fallback_nutrition, fallback_source, fallback_confidence, fallback_reason, fallback_mode = _estimate_nutrition_deterministic_fallback(
+        title=title,
+        ingredients=ingredients,
+        instructions=instructions,
+        base_portions=base_portions,
+        portion_weight_g=portion_weight_g,
+        declared_category=declared_category,
+    )
+    if fallback_nutrition:
+        logger.warning(
+            "Nutrition fallback used for recipe '%s' after failed AI attempts. reason=%s",
+            title,
+            fallback_reason or "fallback_used",
+        )
+        return (
+            fallback_nutrition,
+            fallback_source,
+            fallback_confidence,
+            fallback_reason or "fallback_used",
+            fallback_mode or "fallback",
+        )
+
+    return None, None, None, last_failure_reason or "fallback_used", "fallback"
 
 
 def fetch_html_safely(url: str, timeout: int = 10) -> str:
-    """Bezpieczne pobieranie HTML z obsÅugÄ bÅÄdÃ³w"""
+    """Bezpieczne pobieranie HTML z obsługą błędów"""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -563,14 +2744,14 @@ def fetch_html_safely(url: str, timeout: int = 10) -> str:
         response.raise_for_status()
         return response.text
     except requests.RequestException as e:
-        logger.error(f"BÅÄd pobierania URL {url}: {str(e)}")
+        logger.error(f"Błąd pobierania URL {url}: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Nie moÅ¼na pobraÄ strony: {str(e)}",
+            detail=f"Nie można pobrać strony: {str(e)}",
         )
 
 def ics_escape(text: str) -> str:
-    """Ucieczka znakÃ³w zgodna z iCalendar (Å¼eby nie psuÄ pliku ICS)."""
+    """Ucieczka znaków zgodna z iCalendar (żeby nie psuć pliku ICS)."""
     if not text:
         return ""
     return (
@@ -599,7 +2780,7 @@ async def root():
 
 @app.get("/health", tags=["System"])
 async def health_check(db: Session = Depends(get_db)):
-    """SzczegÃ³Åowy health check z testowaniem bazy danych"""
+    """Szczegółowy health check z testowaniem bazy danych"""
     try:
         # Test DB connection
         db.execute(text("SELECT 1"))
@@ -619,11 +2800,11 @@ async def health_check(db: Session = Depends(get_db)):
 @app.post("/api/auth/bootstrap", response_model=UserResponse, tags=["Auth"])
 async def bootstrap_admin(request: BootstrapRequest, db: Session = Depends(get_db)):
     if ADMIN_BOOTSTRAP_TOKEN and request.token != ADMIN_BOOTSTRAP_TOKEN:
-        raise HTTPException(status_code=403, detail="NieprawidÅowy token bootstrap")
+        raise HTTPException(status_code=403, detail="Nieprawidłowy token bootstrap")
 
     existing_users = db.query(UserDB).count()
     if existing_users > 0:
-        raise HTTPException(status_code=400, detail="Administrator juÅ¼ istnieje")
+        raise HTTPException(status_code=400, detail="Administrator już istnieje")
 
     user = UserDB(
         email=request.email.lower(),
@@ -642,7 +2823,7 @@ async def register_user(request: RegisterRequest, db: Session = Depends(get_db))
     email = request.email.lower()
     existing = db.query(UserDB).filter(UserDB.email == email).first()
     if existing:
-        raise HTTPException(status_code=400, detail="UÅ¼ytkownik juÅ¼ istnieje")
+        raise HTTPException(status_code=400, detail="Użytkownik już istnieje")
 
     user = UserDB(
         first_name=request.first_name.strip(),
@@ -662,9 +2843,9 @@ async def register_user(request: RegisterRequest, db: Session = Depends(get_db))
 async def login(payload: LoginRequest, db: Session = Depends(get_db)):
     user = db.query(UserDB).filter(UserDB.email == payload.email.lower()).first()
     if not user or not verify_password(payload.password, user.hashed_password):
-        raise HTTPException(status_code=401, detail="NieprawidÅowy email lub hasÅo")
+        raise HTTPException(status_code=401, detail="Nieprawidłowy email lub hasło")
     if not user.is_active:
-        raise HTTPException(status_code=403, detail="Konto nieaktywne. Skontaktuj siÄ z administratorem")
+        raise HTTPException(status_code=403, detail="Konto nieaktywne. Skontaktuj się z administratorem")
 
     user.last_login_at = datetime.datetime.utcnow()
     db.commit()
@@ -745,7 +2926,7 @@ async def google_oauth_callback(code: str, state: str, db: Session = Depends(get
     user_id = decode_google_state_token(state)
     user = db.query(UserDB).filter(UserDB.id == user_id).first()
     if not user:
-        raise HTTPException(status_code=404, detail="UÄ¹Ä½ytkownik nie znaleziony")
+        raise HTTPException(status_code=404, detail="Użytkownik nie znaleziony")
 
     response = requests.post(
         "https://oauth2.googleapis.com/token",
@@ -759,7 +2940,7 @@ async def google_oauth_callback(code: str, state: str, db: Session = Depends(get
         timeout=20,
     )
     if not response.ok:
-        raise HTTPException(status_code=502, detail="Nie udaÄ¹âo siÃâ¢ poÄ¹âÃâ¦czyÃâ¡ z Google")
+        raise HTTPException(status_code=502, detail="Nie udało się połączyć z Google")
 
     data = response.json()
     expires_in = data.get("expires_in")
@@ -809,7 +2990,7 @@ async def google_calendars(current_user: UserDB = Depends(get_current_user), db:
         "https://www.googleapis.com/calendar/v3/users/me/calendarList",
     )
     if not response.ok:
-        raise HTTPException(status_code=502, detail="Nie udaÄ¹âo siÃâ¢ pobraÃâ¡ kalendarzy")
+        raise HTTPException(status_code=502, detail="Nie udało się pobrać kalendarzy")
     data = response.json()
     calendars = [
         GoogleCalendarItem(
@@ -836,7 +3017,7 @@ async def google_calendar_select(
         f"https://www.googleapis.com/calendar/v3/users/me/calendarList/{payload.calendar_id}",
     )
     if not response.ok:
-        raise HTTPException(status_code=400, detail="Nie znaleziono kalendarza lub brak uprawnieÄ¹â")
+        raise HTTPException(status_code=400, detail="Nie znaleziono kalendarza lub brak uprawnien")
     data = response.json()
     record.calendar_id = payload.calendar_id
     record.calendar_summary = data.get("summary")
@@ -856,7 +3037,7 @@ async def google_plan_sync(
     db: Session = Depends(get_db),
 ):
     if not payload.events:
-        raise HTTPException(status_code=400, detail="Brak wydarzeÄ¹â do synchronizacji")
+        raise HTTPException(status_code=400, detail="Brak wydarzen do synchronizacji")
 
     record = get_google_token_record(db, current_user.id)
     calendar_id = payload.calendar_id or record.calendar_id
@@ -876,7 +3057,7 @@ async def google_plan_sync(
         try:
             dates.append(datetime.date.fromisoformat(event.date))
         except ValueError:
-            raise HTTPException(status_code=400, detail=f"NieprawidÄ¹âowa data: {event.date}")
+            raise HTTPException(status_code=400, detail=f"Nieprawidlowa data: {event.date}")
 
     date_min = min(dates)
     date_max = max(dates)
@@ -904,7 +3085,7 @@ async def google_plan_sync(
             params=params,
         )
         if not response.ok:
-            raise HTTPException(status_code=502, detail="Nie udaÄ¹âo siÃâ¢ pobraÃâ¡ wydarzeÄ¹â z Google")
+            raise HTTPException(status_code=502, detail="Nie udało się pobrać wydarzeń z Google")
         data = response.json()
         for item in data.get("items", []):
             event_id = item.get("id")
@@ -977,7 +3158,7 @@ async def create_user(
     email = payload.email.lower()
     existing = db.query(UserDB).filter(UserDB.email == email).first()
     if existing:
-        raise HTTPException(status_code=400, detail="UÅ¼ytkownik juÅ¼ istnieje")
+        raise HTTPException(status_code=400, detail="Użytkownik już istnieje")
 
     password = payload.password or secrets.token_urlsafe(10)
     user = UserDB(
@@ -1004,7 +3185,7 @@ async def update_user(
 ):
     user = db.query(UserDB).filter(UserDB.id == user_id).first()
     if not user:
-        raise HTTPException(status_code=404, detail="UÅ¼ytkownik nie znaleziony")
+        raise HTTPException(status_code=404, detail="Użytkownik nie znaleziony")
     if payload.is_active is not None:
         user.is_active = payload.is_active
     if payload.is_admin is not None:
@@ -1020,7 +3201,7 @@ async def reset_user_password(
 ):
     user = db.query(UserDB).filter(UserDB.id == user_id).first()
     if not user:
-        raise HTTPException(status_code=404, detail="UÅ¼ytkownik nie znaleziony")
+        raise HTTPException(status_code=404, detail="Użytkownik nie znaleziony")
 
     temp_password = secrets.token_urlsafe(10)
     user.hashed_password = get_password_hash(temp_password)
@@ -1034,7 +3215,7 @@ async def delete_user(
 ):
     user = db.query(UserDB).filter(UserDB.id == user_id).first()
     if not user:
-        raise HTTPException(status_code=404, detail="UÅ¼ytkownik nie znaleziony")
+        raise HTTPException(status_code=404, detail="Użytkownik nie znaleziony")
 
     db.query(ParseLogDB).filter(ParseLogDB.owner_id == user_id).delete()
     db.query(PlanDB).filter(PlanDB.owner_id == user_id).delete()
@@ -1113,9 +3294,10 @@ async def parse_and_save_recipe(
 ):
     """
     Parsuje przepis z podanego URL i zapisuje w bazie danych.
-    JeÅli przepis juÅ¼ istnieje, aktualizuje jego dane.
+    Jeśli przepis już istnieje, aktualizuje jego dane.
     """
     url_str = str(recipe_in.url)
+    declared_category = normalize_declared_category(recipe_in.declared_category)
 
     logger.info(f"Parsing recipe from: {url_str}")
 
@@ -1126,30 +3308,96 @@ async def parse_and_save_recipe(
         # Parsuj przepis
         scraper = scrape_html(html=html_content, org_url=url_str)
 
-        # WyciÄgnij dane
+        # Wyciągnij dane
         title = scraper.title()
         if not title:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Nie moÅ¼na wyciÄgnÄÄ tytuÅu przepisu z tej strony",
+                detail="Nie można wyciągnąć tytułu przepisu z tej strony",
             )
 
         ingredients = scraper.ingredients()
         if not ingredients:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Nie moÅ¼na wyciÄgnÄÄ skÅadnikÃ³w z tej strony",
+                detail="Nie można wyciągnąć składników z tej strony",
             )
 
-        try:
-            base_portions = extract_portion_count(scraper.yields())
-        except Exception:
-            base_portions = 1
-            logger.warning("Nie udaÅo siÄ odczytaÄ porcji z przepisu, ustawiam 1")
         image_url = scraper.image()
-        instructions = scraper.instructions()
+        instructions_raw = scraper.instructions()
+        instructions_list = _normalize_instruction_list(instructions_raw)
+        instructions_text = "\n".join(instructions_list).strip()
+        if not instructions_text:
+            if isinstance(instructions_raw, str):
+                instructions_text = instructions_raw.strip()
+            elif isinstance(instructions_raw, list):
+                instructions_text = "\n".join(
+                    str(item).strip() for item in instructions_raw if str(item).strip()
+                )
+        yields_text = extract_yield_text_from_page(scraper=scraper, html_content=html_content)
+        yield_context = parse_yield_context(
+            yield_text=yields_text,
+            title=title,
+            ingredients=ingredients,
+            instructions=instructions_list,
+            declared_category=declared_category,
+        )
+        yield_context.declared_category = declared_category
+        yield_context, weight_metadata = resolve_yield_context_weights(
+            context=yield_context,
+            title=title,
+            ingredients=ingredients,
+            instructions=instructions_list,
+        )
+        yield_context.declared_category = declared_category
 
-        # SprawdÅº czy przepis juÅ¼ istnieje
+        base_portions = max(1, int(yield_context.base_portions or 1))
+        servings_unit = yield_context.servings_unit
+        page_nutrition_per_100g = extract_nutrition_per_100g_from_page(
+            scraper=scraper,
+            html_content=html_content,
+        )
+        (
+            nutrition_estimate,
+            nutrition_source,
+            nutrition_confidence_score,
+            nutrition_failure_reason,
+            nutrition_generation_mode,
+        ) = estimate_recipe_nutrition(
+            title=title,
+            ingredients=ingredients,
+            instructions=instructions_list,
+            base_portions=base_portions,
+            page_nutrition_per_100g=page_nutrition_per_100g,
+            portion_weight_g=yield_context.portion_weight_g,
+            declared_category=declared_category,
+        )
+        portion_adjustment = _rebalance_portions_by_profile_if_needed(
+            context=yield_context,
+            title=title,
+            ingredients=ingredients,
+            instructions=instructions_list,
+            nutrition_per_portion=nutrition_estimate,
+        )
+        if portion_adjustment.adjusted:
+            base_portions = max(1, int(yield_context.base_portions or base_portions))
+            (
+                nutrition_estimate,
+                nutrition_source,
+                nutrition_confidence_score,
+                nutrition_failure_reason,
+                nutrition_generation_mode,
+            ) = estimate_recipe_nutrition(
+                title=title,
+                ingredients=ingredients,
+                instructions=instructions_list,
+                base_portions=base_portions,
+                page_nutrition_per_100g=page_nutrition_per_100g,
+                portion_weight_g=yield_context.portion_weight_g,
+                declared_category=declared_category,
+            )
+
+        # Sprawdź czy przepis już istnieje
         recipe = (
             db.query(RecipeDB)
             .filter(RecipeDB.owner_id == current_user.id, RecipeDB.url == url_str)
@@ -1158,24 +3406,71 @@ async def parse_and_save_recipe(
 
         if recipe:
             logger.info(f"Recipe already exists, updating: {title}")
-            # Aktualizuj istniejÄcy przepis
+            # Aktualizuj istniejący przepis
             recipe.title = title
             recipe.ingredients = ingredients
-            recipe.instructions = instructions
+            recipe.instructions = instructions_text
             recipe.base_portions = base_portions
+            recipe.servings_unit = servings_unit
+            recipe.declared_category = declared_category or recipe.declared_category
+            recipe.yield_display_label = yield_context.yield_display_label
+            recipe.yield_assumption_reason = yield_context.assumption_reason
+            apply_portion_adjustment_to_recipe(recipe, portion_adjustment)
+            apply_weight_estimation_to_recipe(recipe, weight_metadata)
+            recipe.total_weight_g = yield_context.total_weight_g
+            recipe.portion_weight_g = yield_context.portion_weight_g
+            recipe.piece_weight_g = yield_context.piece_weight_g
+            recipe.pan_diameter_min_cm = yield_context.pan_diameter_min_cm
+            recipe.pan_diameter_max_cm = yield_context.pan_diameter_max_cm
+            apply_nutrition_to_recipe(
+                recipe,
+                nutrition_estimate,
+                nutrition_source,
+                nutrition_confidence_score,
+                nutrition_generation_mode,
+                nutrition_failure_reason,
+            )
             recipe.image_url = image_url
             recipe.updated_at = datetime.datetime.utcnow()
         else:
             logger.info(f"Creating new recipe: {title}")
-            # UtwÃ³rz nowy przepis
+            # Utwórz nowy przepis
             recipe = RecipeDB(
                 owner_id=current_user.id,
                 title=title,
                 url=url_str,
                 image_url=image_url,
                 ingredients=ingredients,
-                instructions=instructions,
+                instructions=instructions_text,
                 base_portions=base_portions,
+                servings_unit=servings_unit,
+                declared_category=declared_category,
+                yield_display_label=yield_context.yield_display_label,
+                yield_assumption_reason=yield_context.assumption_reason,
+                portion_adjusted_auto=portion_adjustment.adjusted,
+                portion_adjustment_code=portion_adjustment.code,
+                portion_profile=portion_adjustment.profile,
+                process_class=weight_metadata.process_class,
+                raw_weight_g=weight_metadata.raw_weight_g,
+                final_weight_estimation_source=weight_metadata.final_weight_estimation_source,
+                final_weight_confidence=weight_metadata.final_weight_confidence,
+                target_portion_weight_g=portion_adjustment.target_portion_weight_g,
+                original_base_portions=portion_adjustment.original_base_portions,
+                total_weight_g=yield_context.total_weight_g,
+                portion_weight_g=yield_context.portion_weight_g,
+                piece_weight_g=yield_context.piece_weight_g,
+                pan_diameter_min_cm=yield_context.pan_diameter_min_cm,
+                pan_diameter_max_cm=yield_context.pan_diameter_max_cm,
+                nutrition_protein_g=_coerce_nutrition_number((nutrition_estimate or {}).get("protein_g")),
+                nutrition_carbs_g=_coerce_nutrition_number((nutrition_estimate or {}).get("carbs_g")),
+                nutrition_fat_g=_coerce_nutrition_number((nutrition_estimate or {}).get("fat_g")),
+                nutrition_fiber_g=_coerce_nutrition_number((nutrition_estimate or {}).get("fiber_g")),
+                nutrition_glycemic_load=_coerce_nutrition_number((nutrition_estimate or {}).get("glycemic_load")),
+                nutrition_calories_kcal=_coerce_nutrition_number((nutrition_estimate or {}).get("calories_kcal")),
+                nutrition_source=nutrition_source,
+                nutrition_confidence_score=nutrition_confidence_score,
+                nutrition_generation_mode=nutrition_generation_mode,
+                nutrition_failure_reason=nutrition_failure_reason,
             )
             db.add(recipe)
 
@@ -1193,7 +3488,7 @@ async def parse_and_save_recipe(
         log_parse_attempt(current_user.id, url_str, "error", str(e))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"BÅÄd podczas przetwarzania przepisu: {str(e)}",
+            detail=f"Błąd podczas przetwarzania przepisu: {str(e)}",
         )
 
 
@@ -1207,7 +3502,7 @@ async def get_available_recipes(
     current_user: UserDB = Depends(get_current_user),
 ):
     """
-    Zwraca listÄ wszystkich dostÄpnych przepisÃ³w z paginacjÄ.
+    Zwraca listę wszystkich dostępnych przepisów z paginacją.
     """
     try:
         recipes = (
@@ -1236,7 +3531,7 @@ async def get_available_recipes(
         logger.error(f"Error fetching recipes: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="BÅÄd podczas pobierania przepisÃ³w",
+            detail="Błąd podczas pobierania przepisów",
         )
 
 
@@ -1247,7 +3542,7 @@ async def get_recipe(
     current_user: UserDB = Depends(get_current_user),
 ):
     """
-    Zwraca szczegÃ³Åy konkretnego przepisu.
+    Zwraca szczegóły konkretnego przepisu.
     """
     recipe = (
         db.query(RecipeDB)
@@ -1257,7 +3552,7 @@ async def get_recipe(
     if not recipe:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Przepis o ID {recipe_id} nie zostaÅ znaleziony",
+            detail=f"Przepis o ID {recipe_id} nie został znaleziony",
         )
     rating = (
         db.query(RecipeRatingDB)
@@ -1269,6 +3564,75 @@ async def get_recipe(
     )
     if rating:
         setattr(recipe, "rating", rating.rating)
+    return recipe
+
+
+@app.post(
+    "/api/recipes/{recipe_id}/nutrition/recalculate",
+    response_model=RecipeResponse,
+    tags=["Recipes"],
+)
+async def recalculate_recipe_nutrition(
+    recipe_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserDB = Depends(get_current_user),
+):
+    recipe = (
+        db.query(RecipeDB)
+        .filter(RecipeDB.id == recipe_id, RecipeDB.owner_id == current_user.id)
+        .first()
+    )
+    if not recipe:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Przepis o ID {recipe_id} nie został znaleziony",
+        )
+
+    instruction_list = _normalize_instruction_list(recipe.instructions or "")
+    page_nutrition_per_100g: Optional[dict] = None
+    recipe_url = (recipe.url or "").strip()
+    if recipe_url.startswith("http://") or recipe_url.startswith("https://"):
+        try:
+            html_content = fetch_html_safely(recipe_url)
+            scraper = get_scraper_by_host(recipe_url, html_content)
+            if scraper:
+                page_nutrition_per_100g = extract_nutrition_per_100g_from_page(
+                    scraper=scraper,
+                    html_content=html_content,
+                )
+        except Exception as exc:
+            logger.warning(
+                "Nutrition recalculate: page nutrition unavailable for recipe %s (%s)",
+                recipe_id,
+                str(exc),
+            )
+
+    (
+        nutrition_estimate,
+        nutrition_source,
+        nutrition_confidence_score,
+        nutrition_failure_reason,
+        nutrition_generation_mode,
+    ) = estimate_recipe_nutrition(
+        title=recipe.title,
+        ingredients=recipe.ingredients or [],
+        instructions=instruction_list,
+        base_portions=max(1, int(recipe.base_portions or 1)),
+        page_nutrition_per_100g=page_nutrition_per_100g,
+        portion_weight_g=recipe.portion_weight_g,
+        declared_category=recipe.declared_category,
+    )
+    apply_nutrition_to_recipe(
+        recipe,
+        nutrition_estimate,
+        nutrition_source,
+        nutrition_confidence_score,
+        nutrition_generation_mode,
+        nutrition_failure_reason,
+    )
+    recipe.updated_at = datetime.datetime.utcnow()
+    db.commit()
+    db.refresh(recipe)
     return recipe
 
 
@@ -1284,7 +3648,7 @@ async def set_recipe_rating(
     current_user: UserDB = Depends(get_current_user),
 ):
     """
-    Ustawia ocenÄ przepisu (1-5) dla aktualnego uÅ¼ytkownika.
+    Ustawia ocenę przepisu (1-5) dla aktualnego użytkownika.
     """
     recipe = (
         db.query(RecipeDB)
@@ -1294,7 +3658,7 @@ async def set_recipe_rating(
     if not recipe:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Przepis o ID {recipe_id} nie zostaÅ znaleziony",
+            detail=f"Przepis o ID {recipe_id} nie został znaleziony",
         )
 
     existing = (
@@ -1341,12 +3705,568 @@ async def delete_recipe(
     if not recipe:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Przepis o ID {recipe_id} nie zostaÅ znaleziony",
+            detail=f"Przepis o ID {recipe_id} nie został znaleziony",
         )
 
     db.delete(recipe)
     db.commit()
     logger.info(f"Deleted recipe: {recipe.title} (ID: {recipe_id})")
+
+
+SHOPPING_CATEGORIES_ORDER = [
+    "Warzywa i owoce",
+    "Mieso i ryby",
+    "Nabial i jaja",
+    "Pieczywo i makarony",
+    "Oleje i tluszcze",
+    "Przyprawy i dodatki",
+    "Produkty sypkie",
+    "Inne",
+]
+
+SHOPPING_PIECE_UNITS = {
+    "szt",
+    "zabek",
+    "glowka",
+    "puszka",
+    "paczka",
+    "opakowanie",
+    "plasterek",
+    "kromka",
+}
+
+SHOPPING_UNIT_MAP = {
+    "kg": "kg",
+    "g": "g",
+    "l": "l",
+    "ml": "ml",
+    "szt": "szt",
+    "sztuk": "szt",
+    "sztuki": "szt",
+    "lyzka": "lyzka",
+    "lyzki": "lyzka",
+    "lyzek": "lyzka",
+    "lyzeczka": "lyzeczka",
+    "lyzeczki": "lyzeczka",
+    "lyzeczek": "lyzeczka",
+    "szklanka": "szklanka",
+    "szklanki": "szklanka",
+    "opakowanie": "opakowanie",
+    "opakowania": "opakowanie",
+    "zabek": "zabek",
+    "zabki": "zabek",
+    "glowka": "glowka",
+    "glowki": "glowka",
+    "puszka": "puszka",
+    "puszki": "puszka",
+    "paczka": "paczka",
+    "paczki": "paczka",
+    "plasterek": "plasterek",
+    "plasterki": "plasterek",
+    "kromka": "kromka",
+    "kromki": "kromka",
+}
+
+SHOPPING_CATEGORY_CANONICAL_MAP = {
+    "warzywa i owoce": "Warzywa i owoce",
+    "warzywa": "Warzywa i owoce",
+    "owoce": "Warzywa i owoce",
+    "mieso i ryby": "Mieso i ryby",
+    "mieso": "Mieso i ryby",
+    "ryby": "Mieso i ryby",
+    "nabial i jaja": "Nabial i jaja",
+    "nabial": "Nabial i jaja",
+    "jaja": "Nabial i jaja",
+    "pieczywo i makarony": "Pieczywo i makarony",
+    "pieczywo": "Pieczywo i makarony",
+    "makarony": "Pieczywo i makarony",
+    "oleje i tluszcze": "Oleje i tluszcze",
+    "oleje": "Oleje i tluszcze",
+    "tluszcze": "Oleje i tluszcze",
+    "przyprawy i dodatki": "Przyprawy i dodatki",
+    "przyprawy": "Przyprawy i dodatki",
+    "dodatki": "Przyprawy i dodatki",
+    "produkty sypkie": "Produkty sypkie",
+    "sypkie": "Produkty sypkie",
+    "inne": "Inne",
+}
+
+
+def _format_float_compact(value: float, precision: int = 1) -> str:
+    rounded = round(value, precision)
+    if abs(rounded - int(rounded)) < 1e-9:
+        return str(int(rounded))
+    return f"{rounded:.{precision}f}".rstrip("0").rstrip(".")
+
+
+def _parse_quantity_token(token: str) -> Optional[float]:
+    if not token:
+        return None
+    token = token.strip()
+    fraction_match = re.match(r"^(\d+)\s*/\s*(\d+)$", token)
+    if fraction_match:
+        denominator = int(fraction_match.group(2))
+        if denominator == 0:
+            return None
+        return int(fraction_match.group(1)) / denominator
+    return _parse_number_token(token)
+
+
+def _normalize_shopping_unit(raw_unit: Optional[str]) -> Optional[str]:
+    if not raw_unit:
+        return None
+    normalized = _normalize_text(raw_unit)
+    return SHOPPING_UNIT_MAP.get(normalized)
+
+
+def _normalize_shopping_name(raw_name: str) -> str:
+    cleaned = (raw_name or "").strip(" ,.-")
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned
+
+
+def _should_default_to_piece_unit(norm_name: str) -> bool:
+    piece_keywords = (
+        "cebul",
+        "jaj",
+        "papryk",
+        "pomidor",
+        "ziemniak",
+        "marchew",
+        "ogorek",
+        "cytryn",
+        "limonk",
+        "banan",
+        "jablk",
+        "czosnek",
+    )
+    return any(keyword in norm_name for keyword in piece_keywords)
+
+
+def _parse_shopping_ingredient_line(ingredient: str, factor: float) -> Optional[dict]:
+    line = _normalize_shopping_name(ingredient)
+    if not line:
+        return None
+
+    match = re.match(
+        r"^\s*(\d+(?:[.,]\d+)?(?:\s*/\s*\d+(?:[.,]\d+)?)?)(?:\s*[-–]\s*(\d+(?:[.,]\d+)?))?\s*(kg|g|ml|l|szt(?:uk(?:i)?)?|lyzki?|lyzek|lyzeczki?|lyzeczek|szklanki?|opakowani(?:e|a)|zabki?|glowki?|puszki?|paczki?|plasterki?|kromki?)?\b[\s,.-]*(.*)$",
+        line,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return {"name": line, "quantity": None, "unit": None}
+
+    primary_raw = match.group(1)
+    range_max_raw = match.group(2)
+    unit_raw = match.group(3)
+    name_raw = match.group(4) or line
+
+    quantity = _parse_quantity_token(primary_raw) if primary_raw else None
+    if range_max_raw:
+        range_max = _parse_quantity_token(range_max_raw)
+        if range_max is not None and range_max > 0:
+            quantity = range_max
+
+    if quantity is not None:
+        quantity = max(0.0, quantity * max(0.0, factor))
+
+    unit = _normalize_shopping_unit(unit_raw)
+    name = _normalize_shopping_name(name_raw)
+    if not name:
+        name = line
+
+    if quantity is not None and unit is None and _should_default_to_piece_unit(_normalize_text(name)):
+        unit = "szt"
+
+    return {"name": name, "quantity": quantity, "unit": unit}
+
+
+def _format_shopping_amount(quantity: Optional[float], unit: Optional[str]) -> str:
+    if quantity is None or quantity <= 0.0:
+        return ""
+
+    if unit in SHOPPING_PIECE_UNITS:
+        rounded = int(quantity) if float(quantity).is_integer() else int(quantity) + 1
+        rounded = max(1, rounded)
+        return f"{rounded} {unit}" if unit else str(rounded)
+
+    if unit in {"g", "ml"}:
+        if quantity >= 10:
+            value = str(int(round(quantity)))
+        else:
+            value = _format_float_compact(quantity, precision=1)
+    elif unit in {"kg", "l"}:
+        value = _format_float_compact(quantity, precision=2)
+    else:
+        value = _format_float_compact(quantity, precision=1)
+    return f"{value} {unit}".strip() if unit else value
+
+
+def _categorize_shopping_item(name: str) -> str:
+    normalized = _normalize_text(name)
+    category_rules = {
+        "Warzywa i owoce": (
+            "cebula",
+            "cebul",
+            "czosnek",
+            "marchew",
+            "ziemniak",
+            "pomidor",
+            "papryk",
+            "ogorek",
+            "cytryn",
+            "limonk",
+            "pietruszk",
+            "szpinak",
+            "brokul",
+            "kalafior",
+            "jablk",
+            "banan",
+            "owoc",
+            "warzyw",
+        ),
+        "Mieso i ryby": (
+            "kurczak",
+            "wolowin",
+            "wieprz",
+            "kielbas",
+            "boczek",
+            "szynk",
+            "ryba",
+            "losos",
+            "tunczyk",
+            "mieso",
+            "indyk",
+        ),
+        "Nabial i jaja": (
+            "mleko",
+            "jogurt",
+            "smietan",
+            "ser",
+            "serek",
+            "mozzarella",
+            "feta",
+            "mascarpone",
+            "twarog",
+            "jaj",
+            "maslo",
+        ),
+        "Pieczywo i makarony": (
+            "makaron",
+            "chleb",
+            "bulka",
+            "pieczywo",
+            "tortilla",
+            "kasza",
+            "ryz",
+            "platki",
+            "kuskus",
+            "gnocchi",
+        ),
+        "Oleje i tluszcze": (
+            "olej",
+            "oliwa",
+            "tluszcz",
+            "smalec",
+            "maslo klarowane",
+            "ghee",
+        ),
+        "Przyprawy i dodatki": (
+            "sol",
+            "pieprz",
+            "papryka",
+            "kurkuma",
+            "curry",
+            "przypraw",
+            "ziola",
+            "ocet",
+            "sos",
+            "musztard",
+            "ketchup",
+        ),
+        "Produkty sypkie": (
+            "maka",
+            "cukier",
+            "kasza",
+            "ryz",
+            "platki",
+            "kakao",
+            "proszek",
+            "soda",
+            "drozdze",
+            "fasol",
+            "soczewic",
+            "ciecierzyc",
+        ),
+    }
+    for category, keywords in category_rules.items():
+        if any(keyword in normalized for keyword in keywords):
+            return category
+    return "Inne"
+
+
+def _canonicalize_shopping_category(raw_category: str) -> Optional[str]:
+    normalized = _normalize_text(raw_category).strip()
+    if not normalized:
+        return None
+    return SHOPPING_CATEGORY_CANONICAL_MAP.get(normalized)
+
+
+def _validate_ai_shopping_list_payload(payload: Any) -> Optional[List[dict]]:
+    if not isinstance(payload, dict):
+        return None
+    raw_shopping_list = payload.get("shopping_list")
+    if not isinstance(raw_shopping_list, list):
+        return None
+
+    validated_map: dict[str, List[str]] = {}
+    for category_entry in raw_shopping_list:
+        if not isinstance(category_entry, dict):
+            continue
+        category_name = str(category_entry.get("category") or "").strip()
+        canonical_category = _canonicalize_shopping_category(category_name)
+        raw_items = category_entry.get("items")
+        if not isinstance(raw_items, list):
+            continue
+        items: List[str] = []
+        for raw_item in raw_items:
+            if not isinstance(raw_item, str):
+                continue
+            item = raw_item.strip()
+            if item:
+                items.append(item)
+        if items:
+            for item in items:
+                target_category = canonical_category
+                if target_category in (None, "Inne"):
+                    target_category = _categorize_shopping_item(item)
+                validated_map.setdefault(target_category, []).append(item)
+
+    if not validated_map:
+        return None
+
+    validated: List[dict] = []
+    for category in SHOPPING_CATEGORIES_ORDER:
+        items = validated_map.get(category)
+        if not items:
+            continue
+        validated.append({"category": category, "items": items})
+    return validated or None
+
+
+def _extract_json_object_from_text(text: str) -> Optional[dict]:
+    if not text:
+        return None
+    start = text.find("{")
+    if start < 0:
+        return None
+
+    depth = 0
+    in_string = False
+    escape = False
+    end = None
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+            continue
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                end = index + 1
+                break
+
+    if end is None:
+        return None
+
+    try:
+        return json.loads(text[start:end])
+    except json.JSONDecodeError:
+        return None
+
+
+def _extract_failed_generation_snippet(error_message: str) -> Optional[str]:
+    if not error_message or "failed_generation" not in error_message:
+        return None
+    match = re.search(r'"failed_generation"\s*:\s*"([^"]+)"', error_message)
+    if not match:
+        return "failed_generation present"
+    snippet = match.group(1).replace('\\"', '"')
+    return snippet[:500]
+
+
+def _build_shopping_prompt(compiled_data: List[dict], compact: bool = False) -> str:
+    compiled_json = json.dumps(compiled_data, ensure_ascii=False)
+    base_lines = [
+        "You are KitchenOS shopping list assistant.",
+        "Return valid JSON object only.",
+        'Expected shape: {"shopping_list":[{"category":"...","items":["..."]}]}',
+        "Never add products that are not in input.",
+        "Merge identical ingredients and scale by factor.",
+        "Round up piece counts.",
+    ]
+    if compact:
+        base_lines = [
+            "Return JSON only.",
+            'Use shape {"shopping_list":[{"category":"...","items":["..."]}]}',
+            "Use only ingredients from input.",
+            "Do not include markdown.",
+        ]
+    return "\n".join(base_lines + ["INPUT:", compiled_json])
+
+
+def _generate_shopping_list_with_ai(compiled_data: List[dict]) -> tuple[Optional[List[dict]], Optional[str]]:
+    if client is None:
+        return None, "AI niedostepne, wlaczono tryb awaryjny."
+
+    attempts = [
+        {"compact": False, "temperature": 0.0, "response_format": True},
+        {"compact": True, "temperature": 0.0, "response_format": True},
+        {"compact": True, "temperature": 0.0, "response_format": False},
+    ]
+
+    for attempt_number, attempt in enumerate(attempts, start=1):
+        prompt = _build_shopping_prompt(compiled_data, compact=attempt["compact"])
+        try:
+            completion_kwargs = {
+                "messages": [{"role": "user", "content": prompt}],
+                "model": GROQ_MODEL,
+                "temperature": attempt["temperature"],
+            }
+            if attempt["response_format"]:
+                completion_kwargs["response_format"] = {"type": "json_object"}
+
+            chat_completion = client.chat.completions.create(**completion_kwargs)
+            content = (chat_completion.choices[0].message.content or "").strip()
+            if attempt["response_format"]:
+                parsed = json.loads(content)
+            else:
+                parsed = _extract_json_object_from_text(content)
+                if parsed is None:
+                    raise ValueError("No JSON object in AI response")
+
+            validated = _validate_ai_shopping_list_payload(parsed)
+            if validated:
+                return validated, None
+
+            logger.warning("Shopping AI attempt %s returned invalid payload shape", attempt_number)
+        except Exception as exc:
+            raw_error = str(exc)
+            failed_generation = _extract_failed_generation_snippet(raw_error)
+            if failed_generation:
+                logger.warning(
+                    "Shopping AI attempt %s failed_generation: %s",
+                    attempt_number,
+                    failed_generation,
+                )
+            else:
+                logger.warning("Shopping AI attempt %s failed: %s", attempt_number, raw_error[:500])
+
+    return None, "Tryb awaryjny: AI nie zwrocilo poprawnego JSON."
+
+
+def _generate_shopping_list_fallback(compiled_data: List[dict]) -> List[dict]:
+    aggregated: dict[tuple[str, str], dict] = {}
+
+    for recipe_entry in compiled_data:
+        factor = _coerce_nutrition_number(recipe_entry.get("factor")) or 1.0
+        ingredients = recipe_entry.get("ingredients") or []
+        if not isinstance(ingredients, list):
+            continue
+
+        for ingredient in ingredients:
+            if not isinstance(ingredient, str):
+                continue
+            parsed = _parse_shopping_ingredient_line(ingredient, factor)
+            if not parsed:
+                continue
+
+            name = _normalize_shopping_name(parsed.get("name") or "")
+            if not name:
+                continue
+            quantity = _coerce_nutrition_number(parsed.get("quantity"))
+            unit = parsed.get("unit") or ""
+
+            if quantity is not None and quantity < 0.05:
+                continue
+
+            key = (_normalize_text(name), unit)
+            existing = aggregated.get(key)
+            if existing is None:
+                aggregated[key] = {"name": name, "quantity": quantity, "unit": unit}
+                continue
+
+            existing_qty = _coerce_nutrition_number(existing.get("quantity"))
+            if quantity is None or existing_qty is None:
+                existing["quantity"] = existing_qty if existing_qty is not None else quantity
+            else:
+                existing["quantity"] = existing_qty + quantity
+
+    if not aggregated:
+        return []
+
+    categorized: dict[str, List[str]] = {category: [] for category in SHOPPING_CATEGORIES_ORDER}
+    for entry in sorted(aggregated.values(), key=lambda item: _normalize_text(item["name"])):
+        amount = _format_shopping_amount(
+            _coerce_nutrition_number(entry.get("quantity")),
+            entry.get("unit") or None,
+        )
+        label = entry["name"] if not amount else f"{entry['name']} ({amount})"
+        category = _categorize_shopping_item(entry["name"])
+        categorized.setdefault(category, []).append(label)
+
+    shopping_list: List[dict] = []
+    for category in SHOPPING_CATEGORIES_ORDER:
+        items = categorized.get(category) or []
+        if items:
+            shopping_list.append({"category": category, "items": items})
+
+    if shopping_list:
+        return shopping_list
+    return []
+
+
+def _filter_out_water_items(shopping_list: List[dict]) -> List[dict]:
+    filtered_list: List[dict] = []
+    removed_count = 0
+
+    for entry in shopping_list:
+        if not isinstance(entry, dict):
+            continue
+        category = str(entry.get("category") or "").strip()
+        raw_items = entry.get("items")
+        if not category or not isinstance(raw_items, list):
+            continue
+
+        next_items: List[str] = []
+        for raw_item in raw_items:
+            if not isinstance(raw_item, str):
+                continue
+            item = raw_item.strip()
+            if not item:
+                continue
+            normalized = _normalize_text(item)
+            if re.search(r"\bwod\w*\b", normalized):
+                removed_count += 1
+                continue
+            next_items.append(item)
+
+        if next_items:
+            filtered_list.append({"category": category, "items": next_items})
+
+    if removed_count:
+        logger.info("Filtered %s water item(s) from shopping list", removed_count)
+    return filtered_list
 
 
 @app.post(
@@ -1358,8 +4278,8 @@ async def generate_shopping_list(
     current_user: UserDB = Depends(get_current_user),
 ):
     """
-    Generuje zoptymalizowanÄ listÄ zakupÃ³w na podstawie wybranych przepisÃ³w.
-    UÅ¼ywa AI do inteligentnego ÅÄczenia i kategoryzacji skÅadnikÃ³w.
+    Generuje zoptymalizowaną listę zakupów na podstawie wybranych przepisów.
+    Używa AI do inteligentnego łączenia i kategoryzacji składników.
     """
     logger.info(f"Generating shopping list for {len(request.selections)} recipes")
 
@@ -1373,13 +4293,15 @@ async def generate_shopping_list(
             .first()
         )
         if recipe:
-            factor = item.portions / recipe.base_portions
+            requested_portions = max(1, min(PLANNER_MAX_PORTIONS, int(item.portions)))
+            base_portions = max(1, int(recipe.base_portions or 1))
+            factor = requested_portions / base_portions
             compiled_data.append(
                 {
                     "title": recipe.title,
-                    "factor": round(factor, 2),
-                    "base_portions": recipe.base_portions,
-                    "requested_portions": item.portions,
+                    "factor": round(factor, 3),
+                    "base_portions": base_portions,
+                    "requested_portions": requested_portions,
                     "ingredients": recipe.ingredients,
                 }
             )
@@ -1389,103 +4311,47 @@ async def generate_shopping_list(
     if missing_recipes:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Nie znaleziono przepisÃ³w o ID: {missing_recipes}",
+            detail=f"Nie znaleziono przepisów o ID: {missing_recipes}",
         )
 
     if not compiled_data:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Brak danych do wygenerowania listy zakupÃ³w",
+            detail="Brak danych do wygenerowania listy zakupów",
         )
 
-    if client is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="AI jest niedostÄpne. Skonfiguruj GROQ_API_KEY.",
-        )
-
-    # Ulepszone prompt dla AI (ASCII-only, bez problemow z kodowaniem)
-    compiled_json = json.dumps(compiled_data, indent=2, ensure_ascii=False)
-    prompt = "\n".join(
-        [
-            "Dzialasz jako ekspert logistyki kuchennej KitchenOS. Twoim zadaniem jest skonsolidowanie skladnikow z wielu przepisow w jedna, przejrzysta liste zakupow.",
-            "",
-            "DANE WEJSCIOWE:",
-            compiled_json,
-            "",
-            "RESTRYKCYJNE ZASADY GENEROWANIA:",
-            "",
-            "0. ZERO HALUCYNACJI (KRYTYCZNE):",
-            "   - NIE DODAWAJ zadnych produktow, ktorych nie ma w danych wejsciowych.",
-            '   - Jesli skladnik w wejsciu jest nieprecyzyjny (np. "oliwa truflowa"), zachowaj go dokladnie jako osobny produkt.',
-            '   - Nie dodawaj ogolnikow typu "mieso", "sos", "makaron" itp., jesli nie wystepuja w wejsciu.',
-            "",
-            "1. FILTRACJA ZER (KRYTYCZNE):",
-            '   - Jesli po przeliczeniu ilosc jakiegokolwiek skladnika wynosi 0, jest bliska 0 (np. 0.1) lub tekst sugeruje brak (np. "opcjonalnie"), CALKOWICIE USUN ten produkt z listy.',
-            '   - NIE WOLNO wypisywac produktow z iloscia "0".',
-            "",
-            "2. INTELIGENTNE ZAOKRAGLANIE W GORE:",
-            "   - Produkty liczone w sztukach (cebula, czosnek, jaja, warzywa w calosci) ZAWSZE zaokraglaj do najblizszej LICZBY CALKOWITEJ W GORE.",
-            '   - NIE zamieniaj jednostek wagowych (g, ml) na "sztuki". Jesli wejscie ma gramy lub lyzki - zachowaj te jednostki.',
-            "   - Przyklad: 0.2 cebuli -> 1 cebula, 1.1 pora -> 2 pory.",
-            "",
-            "3. AGREGACJA I JEDNOSTKI:",
-            "   - Zsumuj identyczne skladniki (np. sol z 3 przepisow).",
-            '   - Format: "Nazwa produktu (Ilosc Jednostka)".',
-            "   - Jesli skladnik w wejsciu nie ma ilosci, wypisz sama nazwe bez nawiasu.",
-            "   - Uzywaj czytelnych ulamkow (1/2, 1/4) dla szklanek/lyzek, ale liczb calkowitych dla sztuk.",
-            "",
-            "4. KATEGORYZACJA:",
-            "   - Przypisz produkty do kategorii: Warzywa i owoce, Mieso i ryby, Nabial i jaja, Pieczywo i makarony, Oleje i tluszcze, Przyprawy i dodatki, Produkty sypkie, Inne.",
-            "",
-            "ZWROC WYLACZNIE CZYSTY JSON:",
-            "{",
-            '  "shopping_list": [',
-            "    {",
-            '      "category": "Warzywa i owoce",',
-            '      "items": ["Cebula (2 sztuki)", "Czosnek (1 glowka)"]',
-            "    }",
-            "  ]",
-            "}",
-        ]
-    )
-
+    warning: Optional[str] = None
+    generation_mode: Literal["ai", "fallback"] = "ai"
+    shopping_list_data: Optional[List[dict]] = None
 
     try:
-        chat_completion = client.chat.completions.create(
-            messages=[{"role": "user", "content": prompt}],
-            model="llama-3.3-70b-versatile",
-            temperature=0.1,
-            response_format={"type": "json_object"},
-        )
-
-        ai_response = chat_completion.choices[0].message.content
-        result = json.loads(ai_response)
-
-        # Dodaj metadane
-        response = ShoppingListResponse(
-            shopping_list=result.get("shopping_list", []),
-            total_recipes=len(compiled_data),
-            generated_at=datetime.datetime.utcnow(),
-        )
-
-        logger.info(
-            f"Successfully generated shopping list with {len(response.shopping_list)} categories"
-        )
-        return response
-
-    except json.JSONDecodeError as e:
-        logger.error(f"AI returned invalid JSON: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="AI zwrÃ³ciÅo nieprawidÅowy format danych",
-        )
+        shopping_list_data, warning = _generate_shopping_list_with_ai(compiled_data)
     except Exception as e:
-        logger.error(f"Error generating shopping list: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"BÅÄd podczas generowania listy: {str(e)}",
-        )
+        logger.error(f"Unexpected AI shopping generator error: {str(e)}", exc_info=True)
+        warning = "Tryb awaryjny: nie udalo sie uruchomic AI."
+
+    if not shopping_list_data:
+        generation_mode = "fallback"
+        shopping_list_data = _generate_shopping_list_fallback(compiled_data)
+        if not warning:
+            warning = "Lista wygenerowana bez AI. Sprawdz ilosci."
+
+    shopping_list_data = _filter_out_water_items(shopping_list_data)
+
+    response = ShoppingListResponse(
+        shopping_list=shopping_list_data,
+        total_recipes=len(compiled_data),
+        generated_at=datetime.datetime.utcnow(),
+        generation_mode=generation_mode,
+        warning=warning if generation_mode == "fallback" else None,
+    )
+
+    logger.info(
+        "Generated shopping list with %s categories (mode=%s)",
+        len(response.shopping_list),
+        generation_mode,
+    )
+    return response
 
 
 # --- STATYSTYKI ---
@@ -1514,18 +4380,18 @@ async def get_stats(
         logger.error(f"Error fetching stats: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="BÅÄd podczas pobierania statystyk",
+            detail="Błąd podczas pobierania statystyk",
         )
 
 
-# --- ENDPOINTY PLANERA (POPRZEÅIONE NA GÃRÄ) ---
+# --- ENDPOINTY PLANERA (PRZENIESIONE NA GÓRĘ) ---
 
 
 @app.get("/api/plan/load", tags=["Planner"])
 async def load_plan(
     db: Session = Depends(get_db), current_user: UserDB = Depends(get_current_user)
 ):
-    """Åaduje zapisany plan uÅ¼ytkownika."""
+    """Ładuje zapisany plan użytkownika."""
     plan_entry = (
         db.query(PlanDB).filter(PlanDB.owner_id == current_user.id).first()
     )
@@ -1540,11 +4406,11 @@ async def save_plan(
     db: Session = Depends(get_db),
     current_user: UserDB = Depends(get_current_user),
 ):
-    """Zapisuje plan uÅ¼ytkownika."""
-    # Walidacja wejÅcia
+    """Zapisuje plan użytkownika."""
+    # Walidacja wejścia
     selections = plan_data.get("selections", [])
     if not isinstance(selections, list):
-        raise HTTPException(status_code=400, detail="Plan musi byÄ listÄ")
+        raise HTTPException(status_code=400, detail="Plan musi być listą")
 
     plan_entry = (
         db.query(PlanDB).filter(PlanDB.owner_id == current_user.id).first()
@@ -1574,38 +4440,39 @@ async def create_custom_recipe(
     current_user: UserDB = Depends(get_current_user),
 ):
     """
-    Pozwala uÅ¼ytkownikowi wkleiÄ surowy tekst przepisu.
-    AI parsuje tytuÅ, skÅadniki i instrukcje.
+    Pozwala użytkownikowi wkleić surowy tekst przepisu.
+    AI parsuje tytuł, składniki i instrukcje.
     """
     content = (raw_data.get("content") or "").strip()
+    declared_category = normalize_declared_category(raw_data.get("declared_category"))
     if not content:
-        raise HTTPException(status_code=400, detail="Tekst przepisu nie moÅ¼e byÄ pusty")
+        raise HTTPException(status_code=400, detail="Tekst przepisu nie może być pusty")
 
     logger.info("Parsing custom recipe from raw text...")
 
     if client is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="AI jest niedostÄpne. Skonfiguruj GROQ_API_KEY.",
+            detail="AI jest niedostępne. Skonfiguruj GROQ_API_KEY.",
         )
 
     prompt = f"""
-Zanalizuj poniÅ¼szy tekst przepisu kucharskiego.
-WyodrÄbnij dane i zwrÃ³Ä je jako JSON.
+Zanalizuj poniższy tekst przepisu kucharskiego.
+Wyodrębnij dane i zwróć je jako JSON.
 
 Zasady:
-1. JeÅli nie ma tytuÅu, nadaj wÅasny np. "Przepis Domowy".
-2. SkÅadniki: ZwrÃ³Ä listÄ stringÃ³w. UsuÅ numery z wierszy skÅadnikÃ³w.
-3. Porcje: JeÅli nie jest podane, przyjmij 1.
+1. Jeśli nie ma tytułu, nadaj własny np. "Przepis Domowy".
+2. Składniki: Zwróć listę stringów. Usuń numery z wierszy składników.
+3. Porcje: Jeśli nie jest podane, przyjmij 1.
 
-TEKST WEJÅCIOWY:
+TEKST WEJŚCIOWY:
 {content}
 
 ZWROT (tylko JSON):
 {{
-  "title": "TytuÅ",
+  "title": "Tytuł",
   "portions": 1,
-  "ingredients": ["SkÅadnik 1", "SkÅadnik 2"],
+  "ingredients": ["Składnik 1", "Składnik 2"],
   "instructions": "Instrukcje krok po kroku..."
 }}
 """
@@ -1613,14 +4480,86 @@ ZWROT (tylko JSON):
     try:
         chat_completion = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
-            model="llama-3.3-70b-versatile",
+            model=GROQ_MODEL,
             temperature=0.1,
             response_format={"type": "json_object"},
         )
 
         parsed_data = json.loads(chat_completion.choices[0].message.content or "{}")
+        raw_ingredients = parsed_data.get("ingredients") or []
+        if isinstance(raw_ingredients, list):
+            parsed_ingredients = [str(item).strip() for item in raw_ingredients if str(item).strip()]
+        else:
+            parsed_ingredients = []
 
-        # Ikona domyÅlna
+        instructions_list = _normalize_instruction_list(parsed_data.get("instructions"))
+        instructions_text = "\n".join(instructions_list).strip()
+        parsed_title = (parsed_data.get("title") or "Przepis Własny").strip()
+        yield_label = extract_yield_text_from_text_blob(content)
+        yield_context = parse_yield_context(
+            yield_text=yield_label,
+            title=parsed_title,
+            ingredients=parsed_ingredients,
+            instructions=instructions_list,
+            declared_category=declared_category,
+        )
+        yield_context.declared_category = declared_category
+        if yield_context.mode == "unknown":
+            try:
+                fallback_portions = int(parsed_data.get("portions") or 1)
+            except (TypeError, ValueError):
+                fallback_portions = 1
+            yield_context.base_portions = max(1, fallback_portions)
+        yield_context, weight_metadata = resolve_yield_context_weights(
+            context=yield_context,
+            title=parsed_title,
+            ingredients=parsed_ingredients,
+            instructions=instructions_list,
+        )
+        yield_context.declared_category = declared_category
+        base_portions = max(1, int(yield_context.base_portions or 1))
+        servings_unit = yield_context.servings_unit
+        (
+            nutrition_estimate,
+            nutrition_source,
+            nutrition_confidence_score,
+            nutrition_failure_reason,
+            nutrition_generation_mode,
+        ) = estimate_recipe_nutrition(
+            title=parsed_title,
+            ingredients=parsed_ingredients,
+            instructions=instructions_list,
+            base_portions=base_portions,
+            page_nutrition_per_100g=None,
+            portion_weight_g=yield_context.portion_weight_g,
+            declared_category=declared_category,
+        )
+        portion_adjustment = _rebalance_portions_by_profile_if_needed(
+            context=yield_context,
+            title=parsed_title,
+            ingredients=parsed_ingredients,
+            instructions=instructions_list,
+            nutrition_per_portion=nutrition_estimate,
+        )
+        if portion_adjustment.adjusted:
+            base_portions = max(1, int(yield_context.base_portions or base_portions))
+            (
+                nutrition_estimate,
+                nutrition_source,
+                nutrition_confidence_score,
+                nutrition_failure_reason,
+                nutrition_generation_mode,
+            ) = estimate_recipe_nutrition(
+                title=parsed_title,
+                ingredients=parsed_ingredients,
+                instructions=instructions_list,
+                base_portions=base_portions,
+                page_nutrition_per_100g=None,
+                portion_weight_g=yield_context.portion_weight_g,
+                declared_category=declared_category,
+            )
+
+        # Ikona domyślna
         generic_icon = "https://cdn-icons-png.flaticon.com/512/3081/3081557.png"
 
         # --- KLUCZOWE: unikalny URL, bo w bazie url ma unique=True ---
@@ -1628,12 +4567,40 @@ ZWROT (tylko JSON):
 
         recipe = RecipeDB(
             owner_id=current_user.id,
-            title=(parsed_data.get("title") or "Przepis WÅasny").strip(),
+            title=parsed_title,
             url=custom_url,
             image_url=generic_icon,
-            ingredients=parsed_data.get("ingredients") or [],
-            instructions=parsed_data.get("instructions") or "",
-            base_portions=int(parsed_data.get("portions") or 1),
+            ingredients=parsed_ingredients,
+            instructions=instructions_text,
+            base_portions=base_portions,
+            servings_unit=servings_unit,
+            declared_category=declared_category,
+            yield_display_label=yield_context.yield_display_label,
+            yield_assumption_reason=yield_context.assumption_reason,
+            portion_adjusted_auto=portion_adjustment.adjusted,
+            portion_adjustment_code=portion_adjustment.code,
+            portion_profile=portion_adjustment.profile,
+            process_class=weight_metadata.process_class,
+            raw_weight_g=weight_metadata.raw_weight_g,
+            final_weight_estimation_source=weight_metadata.final_weight_estimation_source,
+            final_weight_confidence=weight_metadata.final_weight_confidence,
+            target_portion_weight_g=portion_adjustment.target_portion_weight_g,
+            original_base_portions=portion_adjustment.original_base_portions,
+            total_weight_g=yield_context.total_weight_g,
+            portion_weight_g=yield_context.portion_weight_g,
+            piece_weight_g=yield_context.piece_weight_g,
+            pan_diameter_min_cm=yield_context.pan_diameter_min_cm,
+            pan_diameter_max_cm=yield_context.pan_diameter_max_cm,
+            nutrition_protein_g=_coerce_nutrition_number((nutrition_estimate or {}).get("protein_g")),
+            nutrition_carbs_g=_coerce_nutrition_number((nutrition_estimate or {}).get("carbs_g")),
+            nutrition_fat_g=_coerce_nutrition_number((nutrition_estimate or {}).get("fat_g")),
+            nutrition_fiber_g=_coerce_nutrition_number((nutrition_estimate or {}).get("fiber_g")),
+            nutrition_glycemic_load=_coerce_nutrition_number((nutrition_estimate or {}).get("glycemic_load")),
+            nutrition_calories_kcal=_coerce_nutrition_number((nutrition_estimate or {}).get("calories_kcal")),
+            nutrition_source=nutrition_source,
+            nutrition_confidence_score=nutrition_confidence_score,
+            nutrition_generation_mode=nutrition_generation_mode,
+            nutrition_failure_reason=nutrition_failure_reason,
         )
 
         db.add(recipe)
@@ -1646,7 +4613,7 @@ ZWROT (tylko JSON):
         logger.error(f"Error parsing custom recipe: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail="AI nie poradziÅo sobie z tekstem. SprÃ³buj formatu: 'TytuÅ\\nSkÅadniki...\\nInstrukcje...'",
+            detail="AI nie poradziło sobie z tekstem. Spróbuj formatu: 'Tytuł\\nSkładniki...\\nInstrukcje...'",
         )
 
 def _normalize_inspire_ingredients(raw: Any) -> List[str]:
@@ -1666,19 +4633,86 @@ def _normalize_inspire_ingredients(raw: Any) -> List[str]:
     return ingredients
 
 
+def _looks_like_instruction_noise(norm_line: str) -> bool:
+    patterns = (
+        r"^(czas przygotowania|czas pieczenia|czas gotowania|czas smazenia)\b",
+        r"^(liczba porcji|porcje|dla osob)\b",
+        r"^(w\s*100\s*g|wartosc energetyczna|wartosc odzywcza)\b",
+        r"^(weglowodany|bialko|tluszcz\w*|blonnik|dieta)\b",
+        r"^-?\s*w tym cukry\b",
+    )
+    return any(re.search(pattern, norm_line) for pattern in patterns)
+
+
+def _normalize_instruction_entries(entries: List[str]) -> List[str]:
+    prepared: List[str] = []
+    for item in entries:
+        text = re.sub(r"\s+", " ", str(item or "")).strip()
+        if not text:
+            continue
+        text = re.sub(r"^(?:krok\s*\d+[:.)-]*\s*|\d+[.)-]\s*|[-*•]\s*)", "", text, flags=re.IGNORECASE).strip()
+        text = text.strip(" -:;")
+        if not text:
+            continue
+        if _looks_like_instruction_noise(_normalize_text(text)):
+            continue
+        prepared.append(text)
+
+    if not prepared:
+        return []
+
+    merged: List[str] = []
+    for line in prepared:
+        if not merged:
+            merged.append(line)
+            continue
+
+        prev = merged[-1]
+        prev_words = len(prev.split())
+        line_words = len(line.split())
+        prev_ends_sentence = bool(re.search(r"[.!?]$", prev))
+        line_starts_sentence = bool(re.match(r"^[A-ZĄĆĘŁŃÓŚŹŻ]", line))
+
+        should_merge = (
+            line_words <= 4
+            or len(line) < 24
+            or prev_words <= 2
+            or len(prev) < 18
+        ) and not (prev_ends_sentence and line_starts_sentence)
+
+        if should_merge:
+            merged[-1] = re.sub(r"\s+", " ", f"{prev} {line}").strip()
+        else:
+            merged.append(line)
+
+    # Remove consecutive duplicates that may appear after merging.
+    deduped: List[str] = []
+    for line in merged:
+        if not deduped or _normalize_text(deduped[-1]) != _normalize_text(line):
+            deduped.append(line)
+    return deduped
+
+
 def _normalize_instruction_list(raw: Any) -> List[str]:
+    entries: List[str] = []
     if isinstance(raw, list):
-        return [str(item).strip() for item in raw if str(item).strip()]
+        for item in raw:
+            text = str(item or "").strip()
+            if not text:
+                continue
+            entries.extend([line.strip() for line in re.split(r"[\r\n]+", text) if line.strip()])
+        return _normalize_instruction_entries(entries)
     if isinstance(raw, str):
-        return [line.strip() for line in re.split(r"[\\r\\n]+", raw) if line.strip()]
+        entries = [line.strip() for line in re.split(r"[\r\n]+", raw) if line.strip()]
+        return _normalize_instruction_entries(entries)
     return []
 
 
 def _build_inspire_response(payload: dict, user_ingredients: List[str]) -> InspireRecipeResponse:
     if not isinstance(payload, dict):
-        raise HTTPException(status_code=502, detail="AI zwrÄÅciÄ¹âo nieprawidÄ¹âowe dane")
+        raise HTTPException(status_code=502, detail="AI zwróciło nieprawidłowe dane")
 
-    title = str(payload.get("title") or "Inspiracja z lodÄÅwki").strip()
+    title = str(payload.get("title") or "Inspiracja z lodówki").strip()
     description = str(payload.get("description") or "").strip() or None
     difficulty = str(payload.get("difficulty") or "").strip() or None
     prep_time = str(payload.get("prep_time") or "").strip() or None
@@ -1708,7 +4742,7 @@ def _build_inspire_response(payload: dict, user_ingredients: List[str]) -> Inspi
 
     instructions = _normalize_instruction_list(payload.get("instructions"))
     if not ingredients or not instructions:
-        raise HTTPException(status_code=502, detail="AI zwrÄÅciÄ¹âo niekompletny przepis")
+        raise HTTPException(status_code=502, detail="AI zwróciło niekompletny przepis")
 
     return InspireRecipeResponse(
         title=title,
@@ -1728,47 +4762,47 @@ async def inspire_recipe(
 ):
     ingredients = _normalize_inspire_ingredients(raw_payload)
     if not ingredients:
-        raise HTTPException(status_code=400, detail="Lista skÄ¹âadnikÄÅw nie moÄ¹Ä½e byÃâ¡ pusta")
+        raise HTTPException(status_code=400, detail="Lista składników nie może być pusta")
 
     if client is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="AI jest niedostÃâ¢pne. Skonfiguruj GROQ_API_KEY.",
+            detail="AI jest niedostępne. Skonfiguruj GROQ_API_KEY.",
         )
 
     prompt = f"""
-Role: JesteÄ¹âº kreatywnym Szefem Kuchni i ekspertem Zero Waste wspÄÅÄ¹âpracujÃâ¦cym z systemem KitchenOS.
-Task: Na podstawie listy skÄ¹âadnikÄÅw podanych przez uÄ¹Ä½ytkownika, zaproponuj JEDEN konkretny, smaczny i realistyczny przepis.
+Role: Jesteś kreatywnym Szefem Kuchni i ekspertem Zero Waste współpracującym z systemem KitchenOS.
+Task: Na podstawie listy składników podanych przez użytkownika, zaproponuj JEDEN konkretny, smaczny i realistyczny przepis.
 
 ZASADY:
-1. SkÄ¹âadniki: Maksymalnie wykorzystaj to, co podaÄ¹â uÄ¹Ä½ytkownik. MoÄ¹Ä½esz zaÄ¹âoÄ¹Ä½yÃâ¡, Ä¹Ä½e uÄ¹Ä½ytkownik posiada "bazÃâ¢" (sÄÅl, pieprz, woda, olej, podstawowe przyprawy).
-2. Format: ZwrÄÅÃâ¡ ODPOWIEDÄ¹Â¹ WYÄ¹ÂÃâCZNIE W FORMACIE JSON. Nie pisz Ä¹Ä½adnych wstÃâ¢pÄÅw ani podsumowaÄ¹â.
-3. JÃâ¢zyk: Odpowiadaj w jÃâ¢zyku polskim.
-4. KreatywnoÄ¹âºÃâ¡: JeÄ¹âºli skÄ¹âadniki do siebie nie pasujÃâ¦, sprÄÅbuj znaleÄ¹ÅÃâ¡ najbardziej sensowne poÄ¹âÃâ¦czenie (np. kuchnia fusion).
+1. Składniki: Maksymalnie wykorzystaj to, co podał użytkownik. Możesz założyć, że użytkownik posiada "bazę" (sól, pieprz, woda, olej, podstawowe przyprawy).
+2. Format: Zwróć ODPOWIEDŹ WYŁĄCZNIE W FORMACIE JSON. Nie pisz żadnych wstępów ani podsumowań.
+3. Język: Odpowiadaj w języku polskim.
+4. Kreatywność: Jeśli składniki do siebie nie pasują, spróbuj znaleźć najbardziej sensowne połączenie (np. kuchnia fusion).
 
 STRUKTURA JSON:
 {{
   "title": "Nazwa dania",
-  "description": "KrÄÅtki, apetyczny opis (max 2 zdania).",
-  "difficulty": "Ä¹Âatwe/Ä¹Å¡rednie/Trudne",
+  "description": "Krótki, apetyczny opis (max 2 zdania).",
+  "difficulty": "Łatwe/Średnie/Trudne",
   "prep_time": "czas w minutach",
   "ingredients": [
-    {{"item": "nazwa", "amount": "iloÄ¹âºÃâ¡", "is_extra": true/false}}
+    {{"item": "nazwa", "amount": "ilość", "is_extra": true/false}}
   ],
   "instructions": ["Krok 1...", "Krok 2..."],
   "tips": "Opcjonalna porada szefa kuchni."
 }}
 
-*is_extra: oznacz jako true, jeÄ¹âºli skÄ¹âadnika nie ma na liÄ¹âºcie uÄ¹Ä½ytkownika, ale jest niezbÃâ¢dny do wykonania dania.*
+*is_extra: oznacz jako true, jeśli składnika nie ma na liście użytkownika, ale jest niezbędny do wykonania dania.*
 
-SKÄ¹ÂADNIKI UÄ¹Â»YTKOWNIKA:
+SKŁADNIKI UŻYTKOWNIKA:
 {json.dumps(ingredients, ensure_ascii=False)}
 """
 
     try:
         chat_completion = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
-            model="llama-3.3-70b-versatile",
+            model=GROQ_MODEL,
             temperature=0.2,
             response_format={"type": "json_object"},
         )
@@ -1779,19 +4813,19 @@ SKÄ¹ÂADNIKI UÄ¹Â»YTKOWNIKA:
             start = ai_response.find("{")
             end = ai_response.rfind("}")
             if start == -1 or end == -1:
-                raise HTTPException(status_code=502, detail="AI zwrÄÅciÄ¹âo nieprawidÄ¹âowy JSON")
+                raise HTTPException(status_code=502, detail="AI zwróciło nieprawidłowy JSON")
             parsed = json.loads(ai_response[start : end + 1])
 
         return _build_inspire_response(parsed, ingredients)
     except HTTPException:
         raise
     except ValidationError:
-        raise HTTPException(status_code=502, detail="AI zwrÄÅciÄ¹âo niepoprawny format danych")
+        raise HTTPException(status_code=502, detail="AI zwróciło niepoprawny format danych")
     except Exception as e:
         logger.error(f"Error inspiring recipe: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Nie udaÄ¹âo siÃâ¢ wygenerowaÃâ¡ inspiracji",
+            detail="Nie udało się wygenerować inspiracji",
         )
 
 
@@ -1808,7 +4842,7 @@ async def create_recipe(
 ):
     title = payload.title.strip()
     if not title:
-        raise HTTPException(status_code=400, detail="TytuÄ¹â nie moÄ¹Ä½e byÃâ¡ pusty")
+        raise HTTPException(status_code=400, detail="Tytuł nie może być pusty")
 
     ingredients: List[str] = []
     if payload.ingredients:
@@ -1823,12 +4857,70 @@ async def create_recipe(
             ingredients = [str(item).strip() for item in payload.ingredients if str(item).strip()]
 
     if not ingredients:
-        raise HTTPException(status_code=400, detail="Lista skÄ¹âadnikÄÅw nie moÄ¹Ä½e byÃâ¡ pusta")
+        raise HTTPException(status_code=400, detail="Lista składników nie może być pusta")
 
     instructions_list = _normalize_instruction_list(payload.instructions)
     instructions_text = "\n".join(instructions_list).strip()
     if not instructions_text:
-        raise HTTPException(status_code=400, detail="Instrukcje nie mogÃâ¦ byÃâ¡ puste")
+        raise HTTPException(status_code=400, detail="Instrukcje nie moga byc puste")
+
+    base_portions = max(1, int(payload.base_portions or 1))
+    servings_unit = normalize_servings_unit(payload.servings_unit)
+    declared_category = normalize_declared_category(payload.declared_category)
+    yield_context = YieldContext(
+        mode="explicit_people" if servings_unit == "people" else "explicit_servings",
+        base_portions=base_portions,
+        servings_unit="people" if servings_unit == "people" else "servings",
+        declared_category=declared_category,
+        yield_display_label=f"{base_portions} {'osob' if servings_unit == 'people' else 'porcji'}",
+    )
+    yield_context, weight_metadata = resolve_yield_context_weights(
+        context=yield_context,
+        title=title,
+        ingredients=ingredients,
+        instructions=instructions_list,
+    )
+    yield_context.declared_category = declared_category
+
+    (
+        nutrition_estimate,
+        nutrition_source,
+        nutrition_confidence_score,
+        nutrition_failure_reason,
+        nutrition_generation_mode,
+    ) = estimate_recipe_nutrition(
+        title=title,
+        ingredients=ingredients,
+        instructions=instructions_list,
+        base_portions=base_portions,
+        page_nutrition_per_100g=None,
+        portion_weight_g=yield_context.portion_weight_g,
+        declared_category=declared_category,
+    )
+    portion_adjustment = _rebalance_portions_by_profile_if_needed(
+        context=yield_context,
+        title=title,
+        ingredients=ingredients,
+        instructions=instructions_list,
+        nutrition_per_portion=nutrition_estimate,
+    )
+    if portion_adjustment.adjusted:
+        base_portions = max(1, int(yield_context.base_portions or base_portions))
+        (
+            nutrition_estimate,
+            nutrition_source,
+            nutrition_confidence_score,
+            nutrition_failure_reason,
+            nutrition_generation_mode,
+        ) = estimate_recipe_nutrition(
+            title=title,
+            ingredients=ingredients,
+            instructions=instructions_list,
+            base_portions=base_portions,
+            page_nutrition_per_100g=None,
+            portion_weight_g=yield_context.portion_weight_g,
+            declared_category=declared_category,
+        )
 
     generic_icon = "https://cdn-icons-png.flaticon.com/512/3081/3081557.png"
     recipe = RecipeDB(
@@ -1838,7 +4930,35 @@ async def create_recipe(
         image_url=generic_icon,
         ingredients=ingredients,
         instructions=instructions_text,
-        base_portions=int(payload.base_portions or 1),
+        base_portions=base_portions,
+        servings_unit=servings_unit,
+        declared_category=declared_category,
+        yield_display_label=yield_context.yield_display_label,
+        yield_assumption_reason=yield_context.assumption_reason,
+        portion_adjusted_auto=portion_adjustment.adjusted,
+        portion_adjustment_code=portion_adjustment.code,
+        portion_profile=portion_adjustment.profile,
+        process_class=weight_metadata.process_class,
+        raw_weight_g=weight_metadata.raw_weight_g,
+        final_weight_estimation_source=weight_metadata.final_weight_estimation_source,
+        final_weight_confidence=weight_metadata.final_weight_confidence,
+        target_portion_weight_g=portion_adjustment.target_portion_weight_g,
+        original_base_portions=portion_adjustment.original_base_portions,
+        total_weight_g=yield_context.total_weight_g,
+        portion_weight_g=yield_context.portion_weight_g,
+        piece_weight_g=yield_context.piece_weight_g,
+        pan_diameter_min_cm=yield_context.pan_diameter_min_cm,
+        pan_diameter_max_cm=yield_context.pan_diameter_max_cm,
+        nutrition_protein_g=_coerce_nutrition_number((nutrition_estimate or {}).get("protein_g")),
+        nutrition_carbs_g=_coerce_nutrition_number((nutrition_estimate or {}).get("carbs_g")),
+        nutrition_fat_g=_coerce_nutrition_number((nutrition_estimate or {}).get("fat_g")),
+        nutrition_fiber_g=_coerce_nutrition_number((nutrition_estimate or {}).get("fiber_g")),
+        nutrition_glycemic_load=_coerce_nutrition_number((nutrition_estimate or {}).get("glycemic_load")),
+        nutrition_calories_kcal=_coerce_nutrition_number((nutrition_estimate or {}).get("calories_kcal")),
+        nutrition_source=nutrition_source,
+        nutrition_confidence_score=nutrition_confidence_score,
+        nutrition_generation_mode=nutrition_generation_mode,
+        nutrition_failure_reason=nutrition_failure_reason,
     )
 
     db.add(recipe)
@@ -1854,8 +4974,8 @@ async def export_calendar(
 ):
     """
     Generuje poprawny plik ICS:
-    - DTEND jest dniem nastÄpnym (dla zdarzeÅ caÅodniowych)
-    - UID jest stabilny (brak duplikatÃ³w po ponownym imporcie)
+    - DTEND jest dniem następnym (dla zdarzeń całodniowych)
+    - UID jest stabilny (brak duplikatów po ponownym imporcie)
     - tekst jest escapowany (bez psucia formatu)
     """
     selections = plan_data.get("selections", [])
@@ -1864,8 +4984,8 @@ async def export_calendar(
 
     today = datetime.date.today()
     day_map = {
-        "PoniedziaÅek": 0, "Wtorek": 1, "Åroda": 2, "Czwartek": 3,
-        "PiÄtek": 4, "Sobota": 5, "Niedziela": 6
+        "Poniedziałek": 0, "Wtorek": 1, "Środa": 2, "Czwartek": 3,
+        "Piątek": 4, "Sobota": 5, "Niedziela": 6
     }
 
     now_str = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
@@ -1876,10 +4996,10 @@ async def export_calendar(
         "PRODID:-//KitchenOS//PL//PL\r\n"
         "CALSCALE:GREGORIAN\r\n"
         "METHOD:PUBLISH\r\n"
-        "X-WR-CALNAME:Plan ObiadÃ³w KitchenOS\r\n"
+        "X-WR-CALNAME:Plan Obiadów KitchenOS\r\n"
     )
 
-    # Licznik, Å¼eby ten sam przepis tego samego dnia mÃ³gÅ wystÄpiÄ kilka razy
+    # Licznik, żeby ten sam przepis tego samego dnia mógł wystąpić kilka razy
     uid_counters = {}
 
     for item in selections:
@@ -1895,21 +5015,21 @@ async def export_calendar(
         if not recipe:
             continue
 
-        day_name = item.get("day") or "PoniedziaÅek"
+        day_name = item.get("day") or "Poniedziałek"
         day_offset = day_map.get(day_name, 0)
 
-        # wyznacz datÄ docelowÄ w tym/na nastÄpnym tygodniu
+        # wyznacz datę docelową w tym/na następnym tygodniu
         days_since_monday = day_offset - today.weekday()
         target_date = today + datetime.timedelta(days=days_since_monday)
         if target_date < today:
             target_date += datetime.timedelta(days=7)
 
         date_str = target_date.strftime("%Y%m%d")
-        end_date_str = (target_date + datetime.timedelta(days=1)).strftime("%Y%m%d")  # DTEND = dzieÅ nastÄpny
+        end_date_str = (target_date + datetime.timedelta(days=1)).strftime("%Y%m%d")  # DTEND = dzień następny
 
         portions_val = int(item.get("portions") or 1)
 
-        # stabilny UID: przepis + data + kolejnoÅÄ wystÄpienia w danym dniu
+        # stabilny UID: przepis + data + kolejność wystąpienia w danym dniu
         key = (recipe.id, date_str)
         uid_counters[key] = uid_counters.get(key, 0) + 1
         occ = uid_counters[key]
@@ -1919,8 +5039,8 @@ async def export_calendar(
         if recipe.ingredients and len(recipe.ingredients) > 5:
             ing_str += "..."
 
-        summary = ics_escape(f"ð³ {recipe.title} ({portions_val} porcji)")
-        description = ics_escape(f"SkÅadniki: {ing_str}\n\nID Przepisu: {recipe.id}")
+        summary = ics_escape(f"🍳 {recipe.title} ({portions_val} porcji)")
+        description = ics_escape(f"Składniki: {ing_str}\n\nID Przepisu: {recipe.id}")
 
         ics_content += (
             "BEGIN:VEVENT\r\n"

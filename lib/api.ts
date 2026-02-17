@@ -57,6 +57,7 @@ const apiFetch = async (path: string, options: RequestInit = {}) => {
 }
 
 export type RecipeCategory = 'obiady' | 'sniadania' | 'lunchbox' | 'salatki' | 'pieczywo' | 'desery' | 'inne'
+export type ServingsUnit = 'servings' | 'people'
 
 export const RECIPE_CATEGORIES: { value: RecipeCategory; label: string }[] = [
   { value: 'obiady', label: 'Obiady' },
@@ -73,6 +74,35 @@ export interface Recipe {
   title: string
   image_url: string
   source_url: string
+  base_portions?: number
+  servings_unit?: ServingsUnit
+  declared_category?: RecipeCategory | null
+  yield_display_label?: string | null
+  yield_assumption_reason?: string | null
+  portion_adjusted_auto?: boolean | null
+  portion_adjustment_code?: string | null
+  portion_profile?: 'soup' | 'main' | 'dessert_baked' | 'dessert_dense' | 'breakfast_sweet' | 'default' | null
+  process_class?: 'batter' | 'hydrate' | 'roast' | 'reduce' | 'unknown' | null
+  raw_weight_g?: number | null
+  final_weight_estimation_source?: 'deterministic' | 'ai' | 'mixed' | null
+  final_weight_confidence?: number | null
+  target_portion_weight_g?: number | null
+  original_base_portions?: number | null
+  total_weight_g?: number | null
+  portion_weight_g?: number | null
+  piece_weight_g?: number | null
+  pan_diameter_min_cm?: number | null
+  pan_diameter_max_cm?: number | null
+  nutrition_protein_g?: number | null
+  nutrition_carbs_g?: number | null
+  nutrition_fat_g?: number | null
+  nutrition_fiber_g?: number | null
+  nutrition_glycemic_load?: number | null
+  nutrition_calories_kcal?: number | null
+  nutrition_source?: 'page_100g' | 'ai' | 'mixed' | 'fallback' | 'mixed_fallback' | null
+  nutrition_confidence_score?: number | null
+  nutrition_failure_reason?: string | null
+  nutrition_generation_mode?: 'ai' | 'fallback' | 'mixed' | null
   category?: RecipeCategory
   rating?: number
   created_at?: string
@@ -205,6 +235,15 @@ export interface ShoppingListResponse {
   shopping_list: ShoppingCategory[]
   total_recipes: number
   generated_at: string
+  generation_mode?: 'ai' | 'fallback'
+  warning?: string | null
+}
+
+export interface ShoppingListResult {
+  shoppingList: ShoppingList
+  generationMode: 'ai' | 'fallback'
+  warning: string | null
+  generatedAt: string
 }
 
 const parseShoppingItem = (item: string): ShoppingItem => {
@@ -257,6 +296,17 @@ export async function fetchRecipeDetails(id: number): Promise<RecipeDetails> {
   return response.json()
 }
 
+export async function recalculateRecipeNutrition(id: number): Promise<RecipeDetails> {
+  const response = await apiFetch(`/api/recipes/${id}/nutrition/recalculate`, {
+    method: 'POST',
+  })
+  if (!response.ok) {
+    const data = await response.json().catch(() => null)
+    throw new Error(data?.detail || 'Failed to recalculate recipe nutrition')
+  }
+  return response.json()
+}
+
 export async function setRecipeRating(recipeId: number, rating: number): Promise<number> {
   const response = await apiFetch(`/api/recipes/${recipeId}/rating`, {
     method: 'PUT',
@@ -277,10 +327,13 @@ export async function fetchStats(): Promise<Stats> {
   return response.json()
 }
 
-export async function parseRecipe(url: string): Promise<Recipe> {
+export async function parseRecipe(url: string, declaredCategory?: RecipeCategory): Promise<Recipe> {
   const response = await apiFetch('/api/parse-recipe', {
     method: 'POST',
-    body: JSON.stringify({ url }),
+    body: JSON.stringify({
+      url,
+      ...(declaredCategory ? { declared_category: declaredCategory } : {}),
+    }),
   })
   if (!response.ok) {
     throw new Error('Failed to parse recipe')
@@ -291,7 +344,7 @@ export async function parseRecipe(url: string): Promise<Recipe> {
 export async function generateShoppingList(
   recipeIds: number[],
   servings: Record<number, number>
-): Promise<ShoppingList> {
+): Promise<ShoppingListResult> {
   const response = await apiFetch('/api/planner/generate', {
     method: 'POST',
     body: JSON.stringify({
@@ -306,7 +359,12 @@ export async function generateShoppingList(
     throw new Error(data?.detail || 'Failed to generate shopping list')
   }
   const data = (await response.json()) as ShoppingListResponse
-  return normalizeShoppingList(data)
+  return {
+    shoppingList: normalizeShoppingList(data),
+    generationMode: data.generation_mode === 'fallback' ? 'fallback' : 'ai',
+    warning: data.warning ?? null,
+    generatedAt: data.generated_at,
+  }
 }
 
 export async function fetchGoogleStatus(): Promise<GoogleStatus> {
@@ -375,12 +433,16 @@ export async function deleteRecipe(id: number): Promise<void> {
 
 export interface ManualRecipeData {
   content: string
+  declared_category?: RecipeCategory
 }
 
 export async function addManualRecipe(data: ManualRecipeData): Promise<Recipe> {
   const response = await apiFetch('/api/recipes/custom', {
     method: 'POST',
-    body: JSON.stringify({ content: data.content }),
+    body: JSON.stringify({
+      content: data.content,
+      ...(data.declared_category ? { declared_category: data.declared_category } : {}),
+    }),
   })
   if (!response.ok) {
     throw new Error('Failed to add manual recipe')
@@ -400,7 +462,10 @@ export async function inspireRecipe(ingredients: string[]): Promise<InspireRecip
   return response.json()
 }
 
-export async function saveInspiredRecipe(recipe: InspireRecipe): Promise<Recipe> {
+export async function saveInspiredRecipe(
+  recipe: InspireRecipe,
+  declaredCategory?: RecipeCategory
+): Promise<Recipe> {
   const ingredients = recipe.ingredients.map((entry) => {
     const amount = entry.amount?.trim()
     return amount ? `${entry.item} (${amount})` : entry.item
@@ -415,6 +480,7 @@ export async function saveInspiredRecipe(recipe: InspireRecipe): Promise<Recipe>
       prep_time: recipe.prep_time,
       difficulty: recipe.difficulty,
       base_portions: 1,
+      ...(declaredCategory ? { declared_category: declaredCategory } : {}),
     }),
   })
   if (!response.ok) {
