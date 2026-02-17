@@ -1,4 +1,4 @@
-﻿# KitchenOS
+# KitchenOS
 
 Nowoczesna aplikacja do planowania posiłków, list zakupów i inspiracji AI.
 
