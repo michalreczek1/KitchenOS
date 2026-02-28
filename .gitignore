@@ -33,3 +33,6 @@ next-env.d.ts
 /backend/**/__pycache__/
 /backend/**/*.pyc
 /backend/*.db
+/playwright-report
+/test-results
+/backend/kitchen_os_e2e.db

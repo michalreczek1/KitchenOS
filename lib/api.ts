@@ -103,6 +103,7 @@ export interface Recipe {
   nutrition_confidence_score?: number | null
   nutrition_failure_reason?: string | null
   nutrition_generation_mode?: 'ai' | 'fallback' | 'mixed' | null
+  ingredients_customized?: boolean
   category?: RecipeCategory
   rating?: number
   created_at?: string
@@ -120,6 +121,11 @@ export interface InspireIngredient {
   item: string
   amount?: string
   is_extra?: boolean
+}
+
+export interface RecipeIngredientPayload {
+  item: string
+  amount?: string
 }
 
 export interface InspireRecipe {
@@ -308,6 +314,21 @@ export async function recalculateRecipeNutrition(id: number): Promise<RecipeDeta
   return response.json()
 }
 
+export async function updateRecipeIngredients(
+  recipeId: number,
+  ingredients: RecipeIngredientPayload[]
+): Promise<RecipeDetails> {
+  const response = await apiFetch(`/api/recipes/${recipeId}`, {
+    method: 'PUT',
+    body: JSON.stringify({ ingredients }),
+  })
+  if (!response.ok) {
+    const data = await response.json().catch(() => null)
+    throw new Error(data?.detail || 'Failed to update recipe ingredients')
+  }
+  return response.json()
+}
+
 export async function setRecipeRating(recipeId: number, rating: number): Promise<number> {
   const response = await apiFetch(`/api/recipes/${recipeId}/rating`, {
     method: 'PUT',
@@ -467,15 +488,11 @@ export async function saveInspiredRecipe(
   recipe: InspireRecipe,
   declaredCategory?: RecipeCategory
 ): Promise<Recipe> {
-  const ingredients = recipe.ingredients.map((entry) => {
-    const amount = entry.amount?.trim()
-    return amount ? `${entry.item} (${amount})` : entry.item
-  })
   const response = await apiFetch('/api/recipes', {
     method: 'POST',
     body: JSON.stringify({
       title: recipe.title,
-      ingredients,
+      ingredients: recipe.ingredients,
       instructions: recipe.instructions,
       description: recipe.description,
       prep_time: recipe.prep_time,

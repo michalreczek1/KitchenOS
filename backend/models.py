@@ -72,6 +72,7 @@ class RecipeDB(Base):
     nutrition_confidence_score = Column(Float, nullable=True)
     nutrition_failure_reason = Column(String, nullable=True)
     nutrition_generation_mode = Column(String, nullable=True)
+    ingredients_customized = Column(Boolean, nullable=False, default=False)
 
 
 class RecipeRatingDB(Base):

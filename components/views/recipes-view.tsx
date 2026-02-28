@@ -16,6 +16,7 @@ interface RecipesViewProps {
   onAddToPlanner: (recipe: Recipe) => void
   onDeleteRecipe: (id: number) => void
   onRateRecipe: (id: number, rating: number) => void
+  onRecipeUpdated: (recipe: Recipe) => void
 }
 
 export function RecipesView({
@@ -25,6 +26,7 @@ export function RecipesView({
   onAddToPlanner,
   onDeleteRecipe,
   onRateRecipe,
+  onRecipeUpdated,
 }: RecipesViewProps) {
   const [searchQuery, setSearchQuery] = useState('')
   const [activeCategory, setActiveCategory] = useState<RecipeCategory | null>(null)
@@ -132,7 +134,11 @@ export function RecipesView({
         </div>
       )}
 
-      <RecipeModal recipeId={selectedRecipeId} onClose={() => setSelectedRecipeId(null)} />
+      <RecipeModal
+        recipeId={selectedRecipeId}
+        onClose={() => setSelectedRecipeId(null)}
+        onRecipeUpdated={onRecipeUpdated}
+      />
     </div>
   )
 }
