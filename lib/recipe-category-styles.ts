@@ -25,6 +25,10 @@ export const categoryStyles: Record<RecipeCategory, { base: string; active: stri
     base: 'border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100',
     active: 'border-rose-300 bg-rose-200 text-rose-900 shadow-[0_8px_18px_rgba(244,63,94,0.25)]',
   },
+  do_sprawdzenia: {
+    base: 'border-cyan-200 bg-cyan-50 text-cyan-700 hover:bg-cyan-100',
+    active: 'border-cyan-300 bg-cyan-200 text-cyan-900 shadow-[0_8px_18px_rgba(34,211,238,0.25)]',
+  },
   inne: {
     base: 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100',
     active: 'border-slate-300 bg-slate-200 text-slate-900 shadow-[0_8px_18px_rgba(148,163,184,0.25)]',

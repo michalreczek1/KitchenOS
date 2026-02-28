@@ -56,7 +56,15 @@ const apiFetch = async (path: string, options: RequestInit = {}) => {
   return response
 }
 
-export type RecipeCategory = 'obiady' | 'sniadania' | 'lunchbox' | 'salatki' | 'pieczywo' | 'desery' | 'inne'
+export type RecipeCategory =
+  | 'obiady'
+  | 'sniadania'
+  | 'lunchbox'
+  | 'salatki'
+  | 'pieczywo'
+  | 'desery'
+  | 'do_sprawdzenia'
+  | 'inne'
 export type ServingsUnit = 'servings' | 'people'
 
 export const RECIPE_CATEGORIES: { value: RecipeCategory; label: string }[] = [
@@ -66,6 +74,7 @@ export const RECIPE_CATEGORIES: { value: RecipeCategory; label: string }[] = [
   { value: 'salatki', label: 'Sałatki' },
   { value: 'pieczywo', label: 'Pieczywo' },
   { value: 'desery', label: 'Desery' },
+  { value: 'do_sprawdzenia', label: 'Do sprawdzenia' },
   { value: 'inne', label: 'Inne' },
 ]
 

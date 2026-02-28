@@ -13,6 +13,7 @@ import {
   Coffee,
   Briefcase,
   Utensils,
+  FlaskConical,
 } from 'lucide-react'
 import { StarIcon as StarSolidIcon } from '@heroicons/react/24/solid'
 import { StarIcon as StarOutlineIcon } from '@heroicons/react/24/outline'
@@ -45,6 +46,7 @@ export function RecipeCard({
     salatki: { Icon: Salad, className: 'text-emerald-400' },
     pieczywo: { Icon: Wheat, className: 'text-yellow-500' },
     desery: { Icon: CakeSlice, className: 'text-rose-400' },
+    do_sprawdzenia: { Icon: FlaskConical, className: 'text-cyan-500' },
     inne: { Icon: Utensils, className: 'text-slate-400' },
   }
 

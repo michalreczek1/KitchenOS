@@ -35,9 +35,10 @@ RECIPE_CATEGORY_VALUES = (
     "salatki",
     "pieczywo",
     "desery",
+    "do_sprawdzenia",
     "inne",
 )
-RecipeCategoryValue = Literal["obiady", "sniadania", "lunchbox", "salatki", "pieczywo", "desery", "inne"]
+RecipeCategoryValue = Literal["obiady", "sniadania", "lunchbox", "salatki", "pieczywo", "desery", "do_sprawdzenia", "inne"]
 
 
 # Load environment variables from .env file

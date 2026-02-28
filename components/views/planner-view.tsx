@@ -47,6 +47,7 @@ const CATEGORY_STYLES: Record<RecipeCategory, string> = {
   salatki: 'border-emerald-200 bg-emerald-100/70 text-emerald-700',
   pieczywo: 'border-yellow-200 bg-yellow-100/70 text-yellow-800',
   desery: 'border-rose-200 bg-rose-100/70 text-rose-700',
+  do_sprawdzenia: 'border-cyan-200 bg-cyan-100/70 text-cyan-700',
   inne: 'border-slate-200 bg-slate-100/70 text-slate-700',
 }
 

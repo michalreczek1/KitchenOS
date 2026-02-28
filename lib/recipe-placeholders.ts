@@ -9,6 +9,7 @@ const PLACEHOLDER_MAP: Record<RecipeCategory, string> = {
   salatki: '/recipe-placeholders/salad.svg',
   pieczywo: '/recipe-placeholders/bread.svg',
   desery: '/recipe-placeholders/dessert.svg',
+  do_sprawdzenia: '/recipe-placeholders/default.svg',
   inne: '/recipe-placeholders/default.svg',
 }
 
