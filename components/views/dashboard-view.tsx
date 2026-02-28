@@ -19,6 +19,7 @@ interface DashboardViewProps {
   onAddToPlanner: (recipe: Recipe) => void
   onDeleteRecipe: (id: number) => void
   plannerRecipeIds: number[]
+  onRecipeUpdated: (recipe: Recipe) => void
 }
 
 export function DashboardView({
@@ -30,6 +31,7 @@ export function DashboardView({
   onAddToPlanner,
   onDeleteRecipe,
   plannerRecipeIds,
+  onRecipeUpdated,
 }: DashboardViewProps) {
   const [activeTab, setActiveTab] = useState<'link' | 'manual'>('link')
   const [linkValue, setLinkValue] = useState('')
@@ -370,7 +372,11 @@ export function DashboardView({
         )}
       </div>
 
-      <RecipeModal recipeId={selectedRecipeId} onClose={() => setSelectedRecipeId(null)} />
+      <RecipeModal
+        recipeId={selectedRecipeId}
+        onClose={() => setSelectedRecipeId(null)}
+        onRecipeUpdated={onRecipeUpdated}
+      />
     </div>
   )
 }

@@ -380,6 +380,15 @@ class RecipeCreateRequest(BaseModel):
     declared_category: Optional[RecipeCategoryValue] = None
 
 
+class RecipeIngredientPayload(BaseModel):
+    item: str = Field(..., min_length=1, max_length=300)
+    amount: str = ""
+
+
+class RecipeIngredientUpdateRequest(BaseModel):
+    ingredients: List[RecipeIngredientPayload] = Field(..., min_items=1)
+
+
 class ChangePasswordRequest(BaseModel):
     current_password: str = Field(..., min_length=1)
     new_password: str = Field(..., min_length=6, max_length=128)
@@ -485,6 +494,7 @@ class RecipeResponse(BaseModel):
     nutrition_confidence_score: Optional[float] = None
     nutrition_failure_reason: Optional[str] = None
     nutrition_generation_mode: Optional[Literal["ai", "fallback", "mixed"]] = None
+    ingredients_customized: bool = False
     created_at: datetime.datetime
     ingredients: List[str] = []
     instructions: Optional[str] = None
@@ -726,6 +736,39 @@ def normalize_declared_category(value: Optional[str]) -> Optional[RecipeCategory
     if normalized in RECIPE_CATEGORY_VALUES:
         return normalized  # type: ignore[return-value]
     return None
+
+
+def _serialize_structured_ingredient(item: str, amount: Optional[str] = None) -> str:
+    item_text = re.sub(r"\s+", " ", (item or "").strip())
+    amount_text = re.sub(r"\s+", " ", (amount or "").strip())
+    if not item_text:
+        return ""
+    return f"{amount_text} {item_text}".strip() if amount_text else item_text
+
+
+def _normalize_recipe_ingredient_lines(raw_ingredients: Any) -> List[str]:
+    ingredients: List[str] = []
+    if not isinstance(raw_ingredients, list):
+        return ingredients
+
+    for entry in raw_ingredients:
+        line = ""
+        if isinstance(entry, str):
+            line = entry.strip()
+        elif isinstance(entry, dict):
+            line = _serialize_structured_ingredient(
+                str(entry.get("item") or ""),
+                str(entry.get("amount") or ""),
+            )
+        elif hasattr(entry, "item"):
+            line = _serialize_structured_ingredient(
+                str(getattr(entry, "item", "") or ""),
+                str(getattr(entry, "amount", "") or ""),
+            )
+        if line:
+            ingredients.append(line)
+
+    return ingredients
 
 
 def _parse_number_token(value: str) -> Optional[float]:
@@ -2608,6 +2651,153 @@ def apply_weight_estimation_to_recipe(
     recipe.final_weight_confidence = _coerce_nutrition_number(metadata.final_weight_confidence)
 
 
+def _fetch_page_nutrition_per_100g_for_recipe(recipe: RecipeDB) -> Optional[dict]:
+    if bool(recipe.ingredients_customized):
+        return None
+
+    recipe_url = (recipe.url or "").strip()
+    if not (recipe_url.startswith("http://") or recipe_url.startswith("https://")):
+        return None
+
+    try:
+        html_content = fetch_html_safely(recipe_url)
+        scraper = get_scraper_by_host(recipe_url, html_content)
+        if not scraper:
+            return None
+        return extract_nutrition_per_100g_from_page(scraper=scraper, html_content=html_content)
+    except Exception as exc:
+        logger.warning(
+            "Nutrition recalculate: page nutrition unavailable for recipe %s (%s)",
+            recipe.id,
+            str(exc),
+        )
+        return None
+
+
+def _build_recipe_yield_context(
+    recipe: RecipeDB,
+    *,
+    title: str,
+    ingredients: List[str],
+    instructions: List[str],
+) -> YieldContext:
+    declared_category = normalize_declared_category(recipe.declared_category)
+    yield_label = (recipe.yield_display_label or "").strip()
+    context = parse_yield_context(
+        yield_text=yield_label,
+        title=title,
+        ingredients=ingredients,
+        instructions=instructions,
+        declared_category=declared_category,
+    )
+
+    current_base_portions = max(1, int(recipe.base_portions or 1))
+    current_servings_unit = normalize_servings_unit(recipe.servings_unit)
+
+    if context.mode in ("unknown", "explicit_servings", "explicit_people"):
+        context.mode = "explicit_people" if current_servings_unit == "people" else "explicit_servings"
+        context.base_portions = current_base_portions
+        context.servings_unit = "people" if current_servings_unit == "people" else "servings"
+        if not context.yield_display_label:
+            context.yield_display_label = (
+                f"{current_base_portions} {'osob' if current_servings_unit == 'people' else 'porcji'}"
+            )
+
+    context.declared_category = declared_category
+    return context
+
+
+def _refresh_recipe_computed_fields(
+    recipe: RecipeDB,
+    *,
+    ingredients: Optional[List[str]] = None,
+    page_nutrition_per_100g: Optional[dict] = None,
+) -> RecipeDB:
+    normalized_ingredients = [str(item).strip() for item in (ingredients or recipe.ingredients or []) if str(item).strip()]
+    instructions_list = _normalize_instruction_list(recipe.instructions or "")
+    instructions_text = "\n".join(instructions_list).strip()
+    declared_category = normalize_declared_category(recipe.declared_category)
+
+    yield_context = _build_recipe_yield_context(
+        recipe,
+        title=recipe.title,
+        ingredients=normalized_ingredients,
+        instructions=instructions_list,
+    )
+    yield_context, weight_metadata = resolve_yield_context_weights(
+        context=yield_context,
+        title=recipe.title,
+        ingredients=normalized_ingredients,
+        instructions=instructions_list,
+    )
+    yield_context.declared_category = declared_category
+
+    base_portions = max(1, int(yield_context.base_portions or recipe.base_portions or 1))
+    (
+        nutrition_estimate,
+        nutrition_source,
+        nutrition_confidence_score,
+        nutrition_failure_reason,
+        nutrition_generation_mode,
+    ) = estimate_recipe_nutrition(
+        title=recipe.title,
+        ingredients=normalized_ingredients,
+        instructions=instructions_list,
+        base_portions=base_portions,
+        page_nutrition_per_100g=page_nutrition_per_100g,
+        portion_weight_g=yield_context.portion_weight_g,
+        declared_category=declared_category,
+    )
+    portion_adjustment = _rebalance_portions_by_profile_if_needed(
+        context=yield_context,
+        title=recipe.title,
+        ingredients=normalized_ingredients,
+        instructions=instructions_list,
+        nutrition_per_portion=nutrition_estimate,
+    )
+    if portion_adjustment.adjusted:
+        base_portions = max(1, int(yield_context.base_portions or base_portions))
+        (
+            nutrition_estimate,
+            nutrition_source,
+            nutrition_confidence_score,
+            nutrition_failure_reason,
+            nutrition_generation_mode,
+        ) = estimate_recipe_nutrition(
+            title=recipe.title,
+            ingredients=normalized_ingredients,
+            instructions=instructions_list,
+            base_portions=base_portions,
+            page_nutrition_per_100g=page_nutrition_per_100g,
+            portion_weight_g=yield_context.portion_weight_g,
+            declared_category=declared_category,
+        )
+
+    recipe.ingredients = normalized_ingredients
+    recipe.instructions = instructions_text
+    recipe.base_portions = base_portions
+    recipe.servings_unit = yield_context.servings_unit
+    recipe.declared_category = declared_category or recipe.declared_category
+    recipe.yield_display_label = yield_context.yield_display_label
+    recipe.yield_assumption_reason = yield_context.assumption_reason
+    apply_portion_adjustment_to_recipe(recipe, portion_adjustment)
+    apply_weight_estimation_to_recipe(recipe, weight_metadata)
+    recipe.total_weight_g = yield_context.total_weight_g
+    recipe.portion_weight_g = yield_context.portion_weight_g
+    recipe.piece_weight_g = yield_context.piece_weight_g
+    recipe.pan_diameter_min_cm = yield_context.pan_diameter_min_cm
+    recipe.pan_diameter_max_cm = yield_context.pan_diameter_max_cm
+    apply_nutrition_to_recipe(
+        recipe,
+        nutrition_estimate,
+        nutrition_source,
+        nutrition_confidence_score,
+        nutrition_generation_mode,
+        nutrition_failure_reason,
+    )
+    return recipe
+
+
 def _estimate_recipe_nutrition_single_attempt(
     title: str,
     ingredients: List[str],
@@ -3409,6 +3599,7 @@ async def parse_and_save_recipe(
             # Aktualizuj istniejący przepis
             recipe.title = title
             recipe.ingredients = ingredients
+            recipe.ingredients_customized = False
             recipe.instructions = instructions_text
             recipe.base_portions = base_portions
             recipe.servings_unit = servings_unit
@@ -3471,6 +3662,7 @@ async def parse_and_save_recipe(
                 nutrition_confidence_score=nutrition_confidence_score,
                 nutrition_generation_mode=nutrition_generation_mode,
                 nutrition_failure_reason=nutrition_failure_reason,
+                ingredients_customized=False,
             )
             db.add(recipe)
 
@@ -3588,48 +3780,41 @@ async def recalculate_recipe_nutrition(
             detail=f"Przepis o ID {recipe_id} nie został znaleziony",
         )
 
-    instruction_list = _normalize_instruction_list(recipe.instructions or "")
-    page_nutrition_per_100g: Optional[dict] = None
-    recipe_url = (recipe.url or "").strip()
-    if recipe_url.startswith("http://") or recipe_url.startswith("https://"):
-        try:
-            html_content = fetch_html_safely(recipe_url)
-            scraper = get_scraper_by_host(recipe_url, html_content)
-            if scraper:
-                page_nutrition_per_100g = extract_nutrition_per_100g_from_page(
-                    scraper=scraper,
-                    html_content=html_content,
-                )
-        except Exception as exc:
-            logger.warning(
-                "Nutrition recalculate: page nutrition unavailable for recipe %s (%s)",
-                recipe_id,
-                str(exc),
-            )
-
-    (
-        nutrition_estimate,
-        nutrition_source,
-        nutrition_confidence_score,
-        nutrition_failure_reason,
-        nutrition_generation_mode,
-    ) = estimate_recipe_nutrition(
-        title=recipe.title,
-        ingredients=recipe.ingredients or [],
-        instructions=instruction_list,
-        base_portions=max(1, int(recipe.base_portions or 1)),
-        page_nutrition_per_100g=page_nutrition_per_100g,
-        portion_weight_g=recipe.portion_weight_g,
-        declared_category=recipe.declared_category,
-    )
-    apply_nutrition_to_recipe(
+    page_nutrition_per_100g = _fetch_page_nutrition_per_100g_for_recipe(recipe)
+    _refresh_recipe_computed_fields(
         recipe,
-        nutrition_estimate,
-        nutrition_source,
-        nutrition_confidence_score,
-        nutrition_generation_mode,
-        nutrition_failure_reason,
+        page_nutrition_per_100g=page_nutrition_per_100g,
     )
+    recipe.updated_at = datetime.datetime.utcnow()
+    db.commit()
+    db.refresh(recipe)
+    return recipe
+
+
+@app.put("/api/recipes/{recipe_id}", response_model=RecipeResponse, tags=["Recipes"])
+async def update_recipe(
+    recipe_id: int,
+    payload: RecipeIngredientUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: UserDB = Depends(get_current_user),
+):
+    recipe = (
+        db.query(RecipeDB)
+        .filter(RecipeDB.id == recipe_id, RecipeDB.owner_id == current_user.id)
+        .first()
+    )
+    if not recipe:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Przepis o ID {recipe_id} nie został znaleziony",
+        )
+
+    ingredients = _normalize_recipe_ingredient_lines(payload.ingredients)
+    if not ingredients:
+        raise HTTPException(status_code=400, detail="Lista składników nie może być pusta")
+
+    recipe.ingredients_customized = True
+    _refresh_recipe_computed_fields(recipe, ingredients=ingredients, page_nutrition_per_100g=None)
     recipe.updated_at = datetime.datetime.utcnow()
     db.commit()
     db.refresh(recipe)
@@ -3847,6 +4032,13 @@ def _parse_shopping_ingredient_line(ingredient: str, factor: float) -> Optional[
     line = _normalize_shopping_name(ingredient)
     if not line:
         return None
+
+    legacy_match = re.match(r"^(.*)\(([^)]+)\)\s*$", line)
+    if legacy_match:
+        legacy_name = _normalize_shopping_name(legacy_match.group(1))
+        legacy_amount = _normalize_shopping_name(legacy_match.group(2))
+        if legacy_name and legacy_amount:
+            return _parse_shopping_ingredient_line(f"{legacy_amount} {legacy_name}", factor)
 
     match = re.match(
         r"^\s*(\d+(?:[.,]\d+)?(?:\s*/\s*\d+(?:[.,]\d+)?)?)(?:\s*[-–]\s*(\d+(?:[.,]\d+)?))?\s*(kg|g|ml|l|szt(?:uk(?:i)?)?|lyzki?|lyzek|lyzeczki?|lyzeczek|szklanki?|opakowani(?:e|a)|zabki?|glowki?|puszki?|paczki?|plasterki?|kromki?)?\b[\s,.-]*(.*)$",
@@ -4601,6 +4793,7 @@ ZWROT (tylko JSON):
             nutrition_confidence_score=nutrition_confidence_score,
             nutrition_generation_mode=nutrition_generation_mode,
             nutrition_failure_reason=nutrition_failure_reason,
+            ingredients_customized=False,
         )
 
         db.add(recipe)
@@ -4844,18 +5037,7 @@ async def create_recipe(
     if not title:
         raise HTTPException(status_code=400, detail="Tytuł nie może być pusty")
 
-    ingredients: List[str] = []
-    if payload.ingredients:
-        if isinstance(payload.ingredients[0], InspireIngredient):
-            for item in payload.ingredients:
-                amount = item.amount.strip() if item.amount else ""
-                if amount:
-                    ingredients.append(f"{item.item} ({amount})")
-                else:
-                    ingredients.append(item.item)
-        else:
-            ingredients = [str(item).strip() for item in payload.ingredients if str(item).strip()]
-
+    ingredients = _normalize_recipe_ingredient_lines(payload.ingredients)
     if not ingredients:
         raise HTTPException(status_code=400, detail="Lista składników nie może być pusta")
 
@@ -4867,61 +5049,6 @@ async def create_recipe(
     base_portions = max(1, int(payload.base_portions or 1))
     servings_unit = normalize_servings_unit(payload.servings_unit)
     declared_category = normalize_declared_category(payload.declared_category)
-    yield_context = YieldContext(
-        mode="explicit_people" if servings_unit == "people" else "explicit_servings",
-        base_portions=base_portions,
-        servings_unit="people" if servings_unit == "people" else "servings",
-        declared_category=declared_category,
-        yield_display_label=f"{base_portions} {'osob' if servings_unit == 'people' else 'porcji'}",
-    )
-    yield_context, weight_metadata = resolve_yield_context_weights(
-        context=yield_context,
-        title=title,
-        ingredients=ingredients,
-        instructions=instructions_list,
-    )
-    yield_context.declared_category = declared_category
-
-    (
-        nutrition_estimate,
-        nutrition_source,
-        nutrition_confidence_score,
-        nutrition_failure_reason,
-        nutrition_generation_mode,
-    ) = estimate_recipe_nutrition(
-        title=title,
-        ingredients=ingredients,
-        instructions=instructions_list,
-        base_portions=base_portions,
-        page_nutrition_per_100g=None,
-        portion_weight_g=yield_context.portion_weight_g,
-        declared_category=declared_category,
-    )
-    portion_adjustment = _rebalance_portions_by_profile_if_needed(
-        context=yield_context,
-        title=title,
-        ingredients=ingredients,
-        instructions=instructions_list,
-        nutrition_per_portion=nutrition_estimate,
-    )
-    if portion_adjustment.adjusted:
-        base_portions = max(1, int(yield_context.base_portions or base_portions))
-        (
-            nutrition_estimate,
-            nutrition_source,
-            nutrition_confidence_score,
-            nutrition_failure_reason,
-            nutrition_generation_mode,
-        ) = estimate_recipe_nutrition(
-            title=title,
-            ingredients=ingredients,
-            instructions=instructions_list,
-            base_portions=base_portions,
-            page_nutrition_per_100g=None,
-            portion_weight_g=yield_context.portion_weight_g,
-            declared_category=declared_category,
-        )
-
     generic_icon = "https://cdn-icons-png.flaticon.com/512/3081/3081557.png"
     recipe = RecipeDB(
         owner_id=current_user.id,
@@ -4933,34 +5060,11 @@ async def create_recipe(
         base_portions=base_portions,
         servings_unit=servings_unit,
         declared_category=declared_category,
-        yield_display_label=yield_context.yield_display_label,
-        yield_assumption_reason=yield_context.assumption_reason,
-        portion_adjusted_auto=portion_adjustment.adjusted,
-        portion_adjustment_code=portion_adjustment.code,
-        portion_profile=portion_adjustment.profile,
-        process_class=weight_metadata.process_class,
-        raw_weight_g=weight_metadata.raw_weight_g,
-        final_weight_estimation_source=weight_metadata.final_weight_estimation_source,
-        final_weight_confidence=weight_metadata.final_weight_confidence,
-        target_portion_weight_g=portion_adjustment.target_portion_weight_g,
-        original_base_portions=portion_adjustment.original_base_portions,
-        total_weight_g=yield_context.total_weight_g,
-        portion_weight_g=yield_context.portion_weight_g,
-        piece_weight_g=yield_context.piece_weight_g,
-        pan_diameter_min_cm=yield_context.pan_diameter_min_cm,
-        pan_diameter_max_cm=yield_context.pan_diameter_max_cm,
-        nutrition_protein_g=_coerce_nutrition_number((nutrition_estimate or {}).get("protein_g")),
-        nutrition_carbs_g=_coerce_nutrition_number((nutrition_estimate or {}).get("carbs_g")),
-        nutrition_fat_g=_coerce_nutrition_number((nutrition_estimate or {}).get("fat_g")),
-        nutrition_fiber_g=_coerce_nutrition_number((nutrition_estimate or {}).get("fiber_g")),
-        nutrition_glycemic_load=_coerce_nutrition_number((nutrition_estimate or {}).get("glycemic_load")),
-        nutrition_calories_kcal=_coerce_nutrition_number((nutrition_estimate or {}).get("calories_kcal")),
-        nutrition_source=nutrition_source,
-        nutrition_confidence_score=nutrition_confidence_score,
-        nutrition_generation_mode=nutrition_generation_mode,
-        nutrition_failure_reason=nutrition_failure_reason,
+        yield_display_label=f"{base_portions} {'osob' if servings_unit == 'people' else 'porcji'}",
+        ingredients_customized=False,
     )
 
+    _refresh_recipe_computed_fields(recipe, ingredients=ingredients, page_nutrition_per_100g=None)
     db.add(recipe)
     db.commit()
     db.refresh(recipe)

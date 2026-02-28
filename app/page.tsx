@@ -379,6 +379,35 @@ function KitchenOSApp({ user, onLogout }: { user: AuthUser; onLogout: () => void
     console.log('[v0] Recipe added:', recipe.title)
   }, [mutateRecipes, mutateStats])
 
+  const handleRecipeUpdated = useCallback((updatedRecipe: Recipe) => {
+    mutateRecipes(
+      (prev) =>
+        prev
+          ? prev.map((recipe) =>
+              recipe.id === updatedRecipe.id
+                ? { ...recipe, ...updatedRecipe, category: updatedRecipe.category ?? recipe.category }
+                : recipe
+            )
+          : prev,
+      { revalidate: false }
+    )
+    setPlannerRecipes((prev) =>
+      prev.map((recipe) =>
+        recipe.id === updatedRecipe.id
+          ? {
+              ...recipe,
+              ...updatedRecipe,
+              category: updatedRecipe.category ?? recipe.category,
+              assignedDays: recipe.assignedDays,
+              assignedDay: recipe.assignedDay,
+              shopping_multiplier: recipe.shopping_multiplier,
+              portions: recipe.portions,
+            }
+          : recipe
+      )
+    )
+  }, [mutateRecipes])
+
   const handleRateRecipe = useCallback(
     async (id: number, rating: number) => {
       try {
@@ -582,6 +611,7 @@ function KitchenOSApp({ user, onLogout }: { user: AuthUser; onLogout: () => void
               onAddToPlanner={handleAddToPlanner}
               onDeleteRecipe={handleDeleteRecipe}
               plannerRecipeIds={plannerRecipeIds}
+              onRecipeUpdated={handleRecipeUpdated}
             />
           )}
 
@@ -593,6 +623,7 @@ function KitchenOSApp({ user, onLogout }: { user: AuthUser; onLogout: () => void
               onAddToPlanner={handleAddToPlanner}
               onDeleteRecipe={handleDeleteRecipe}
               onRateRecipe={handleRateRecipe}
+              onRecipeUpdated={handleRecipeUpdated}
             />
           )}
 
