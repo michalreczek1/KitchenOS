@@ -1,13 +1,12 @@
 import { getCustomRecipeCategoryMap } from '@/lib/custom-recipe-categories'
 
-// Use environment variable, or fallback to same host as the frontend (for LAN access)
+// Use environment variable, or fallback to same origin for reverse-proxied deployments.
 const getApiBaseUrl = () => {
   if (process.env.NEXT_PUBLIC_API_URL) {
     return process.env.NEXT_PUBLIC_API_URL
   }
-  // In browser, use the same hostname as frontend but port 8000
   if (typeof window !== 'undefined') {
-    return `http://${window.location.hostname}:8000`
+    return window.location.origin
   }
   // Server-side fallback
   return 'http://127.0.0.1:8000'
