@@ -7,6 +7,7 @@ import { parseRecipe, addManualRecipe, RECIPE_CATEGORIES, type Recipe, type Reci
 import { saveCustomRecipeCategory } from '@/lib/custom-recipe-categories'
 import { inferRecipeCategory } from '@/lib/recipe-category-inference'
 import { useToast } from '@/components/toast-provider'
+import { DictationInput, DictationTextarea } from '@/components/dictation-field'
 
 interface AddRecipeViewProps {
   onRecipeAdded: (recipe: Recipe) => void
@@ -283,11 +284,11 @@ export function AddRecipeView({ onRecipeAdded }: AddRecipeViewProps) {
           {/* Title */}
           <div className="space-y-2">
             <label className="text-sm font-medium text-foreground">Nazwa przepisu *</label>
-            <input
-              type="text"
+            <DictationInput
               placeholder="np. Spaghetti Bolognese"
               value={title}
-              onChange={(e) => setTitle(e.target.value)}
+              onValueChange={setTitle}
+              dictationLabel="Dyktuj nazwę przepisu"
               className="w-full rounded-xl border border-border bg-card px-4 py-3 text-foreground placeholder:text-muted-foreground transition-all focus:border-primary/50 focus:outline-none focus:ring-2 focus:ring-primary/20"
             />
           </div>
@@ -361,11 +362,12 @@ export function AddRecipeView({ onRecipeAdded }: AddRecipeViewProps) {
             <div className="space-y-2">
               {ingredients.map((ingredient, index) => (
                 <div key={index} className="flex gap-2">
-                  <input
-                    type="text"
+                  <DictationInput
                     placeholder={`Skladnik ${index + 1}, np. 500g makaronu`}
                     value={ingredient}
-                    onChange={(e) => updateIngredient(index, e.target.value)}
+                    onValueChange={(value) => updateIngredient(index, value)}
+                    dictationLabel={`Dyktuj składnik ${index + 1}`}
+                    wrapperClassName="flex-1"
                     className="flex-1 rounded-xl border border-border bg-card px-4 py-3 text-foreground placeholder:text-muted-foreground transition-all focus:border-primary/50 focus:outline-none focus:ring-2 focus:ring-primary/20"
                   />
                   {ingredients.length > 1 && (
@@ -393,10 +395,11 @@ export function AddRecipeView({ onRecipeAdded }: AddRecipeViewProps) {
           {/* Instructions */}
           <div className="space-y-2">
             <label className="text-sm font-medium text-foreground">Instrukcje (opcjonalnie)</label>
-            <textarea
+            <DictationTextarea
               placeholder="Opisz sposob przygotowania..."
               value={instructions}
-              onChange={(e) => setInstructions(e.target.value)}
+              onValueChange={setInstructions}
+              dictationLabel="Dyktuj instrukcje przygotowania"
               rows={4}
               className="w-full rounded-xl border border-border bg-card px-4 py-3 text-foreground placeholder:text-muted-foreground transition-all focus:border-primary/50 focus:outline-none focus:ring-2 focus:ring-primary/20 resize-none"
             />

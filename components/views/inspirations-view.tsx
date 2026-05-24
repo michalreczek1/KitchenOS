@@ -6,6 +6,7 @@ import { inspireRecipe, saveInspiredRecipe, type InspireRecipe, type Recipe } fr
 import { inferRecipeCategory } from '@/lib/recipe-category-inference'
 import { useToast } from '@/components/toast-provider'
 import { Button } from '@/components/ui/button'
+import { DictationTextarea } from '@/components/dictation-field'
 
 interface InspirationsViewProps {
   onRecipeSaved: (recipe: Recipe) => void
@@ -118,9 +119,10 @@ export function InspirationsView({ onRecipeSaved }: InspirationsViewProps) {
       </div>
 
       <div className="space-y-3">
-        <textarea
+        <DictationTextarea
           value={ingredientsText}
-          onChange={(event) => setIngredientsText(event.target.value)}
+          onValueChange={setIngredientsText}
+          dictationLabel="Dyktuj składniki do inspiracji"
           placeholder="np. jajka, pomidory, ser, szczypiorek"
           rows={4}
           className="w-full rounded-2xl border border-border/60 bg-white p-4 text-sm text-foreground shadow-sm transition focus:border-primary/40 focus:outline-none focus:ring-2 focus:ring-primary/20"

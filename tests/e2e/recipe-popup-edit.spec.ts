@@ -2,18 +2,16 @@ import { expect, test } from '@playwright/test'
 
 const API_URL = 'http://127.0.0.1:8000'
 const BOOTSTRAP_TOKEN = 'kitchenos-e2e-bootstrap-token'
+const E2E_EMAIL = 'dictation-e2e@example.com'
+const E2E_PASSWORD = 'Password123!'
 
 test('edits recipe ingredients inside popup and persists recalculated recipe', async ({ page, request }) => {
-  const email = `e2e-${Date.now()}@example.com`
-  const password = 'Password123!'
-
-  const bootstrapResponse = await request.post(`${API_URL}/api/auth/bootstrap`, {
-    data: { email, password, token: BOOTSTRAP_TOKEN },
+  await request.post(`${API_URL}/api/auth/bootstrap`, {
+    data: { email: E2E_EMAIL, password: E2E_PASSWORD, token: BOOTSTRAP_TOKEN },
   })
-  expect(bootstrapResponse.ok()).toBeTruthy()
 
   const loginResponse = await request.post(`${API_URL}/api/auth/login`, {
-    data: { email, password },
+    data: { email: E2E_EMAIL, password: E2E_PASSWORD },
   })
   expect(loginResponse.ok()).toBeTruthy()
   const loginBody = (await loginResponse.json()) as { access_token: string }

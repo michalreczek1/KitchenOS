@@ -8,6 +8,7 @@ import { RecipeCard } from '@/components/recipe-card'
 import { RecipeCardSkeleton } from '@/components/skeletons'
 import { EmptyState } from '@/components/empty-state'
 import { RecipeModal } from '@/components/recipe-modal'
+import { DictationInput } from '@/components/dictation-field'
 
 interface RecipesViewProps {
   recipes: Recipe[]
@@ -56,12 +57,12 @@ export function RecipesView({
       {/* Search Bar */}
       <div className="flex gap-3">
         <div className="relative flex-1">
-          <Search className="absolute top-1/2 left-4 h-5 w-5 -translate-y-1/2 text-muted-foreground" />
-          <input
-            type="text"
+          <DictationInput
             placeholder="Szukaj przepisów..."
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            onValueChange={setSearchQuery}
+            dictationLabel="Dyktuj wyszukiwanie przepisów"
+            leadingIcon={<Search className="absolute top-1/2 left-4 h-5 w-5 -translate-y-1/2 text-muted-foreground" />}
             className="w-full rounded-xl border border-border/50 bg-card/60 py-3 pr-4 pl-12 text-foreground placeholder:text-muted-foreground backdrop-blur-xl transition-all focus:border-primary/50 focus:outline-none focus:ring-2 focus:ring-primary/20"
           />
         </div>

@@ -9,6 +9,7 @@ import { RecipeModal } from '@/components/recipe-modal'
 import { useToast } from '@/components/toast-provider'
 import { saveCustomRecipeCategory } from '@/lib/custom-recipe-categories'
 import { inferRecipeCategory } from '@/lib/recipe-category-inference'
+import { DictationTextarea } from '@/components/dictation-field'
 
 interface DashboardViewProps {
   stats: Stats | null
@@ -302,9 +303,10 @@ export function DashboardView({
                   ))}
                 </select>
               </div>
-              <textarea
+              <DictationTextarea
                 value={manualText}
-                onChange={(event) => setManualText(event.target.value)}
+                onValueChange={setManualText}
+                dictationLabel="Dyktuj własny przepis"
                 placeholder="Wklej caly przepis (tytul, skladniki, instrukcje)"
                 rows={4}
                 className="w-full rounded-xl border border-border/50 bg-background/80 px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary/50 focus:outline-none focus:ring-2 focus:ring-primary/20"
