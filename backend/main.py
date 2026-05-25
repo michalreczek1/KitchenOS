@@ -3,11 +3,13 @@ import re
 import math
 import requests
 import datetime
+import ipaddress
 import json
 import uuid
 import secrets
 import unicodedata
-from urllib.parse import urlparse, urlencode
+import socket
+from urllib.parse import urljoin, urlparse, urlencode
 from dataclasses import dataclass
 from fastapi import FastAPI, HTTPException, Depends, status, Body
 from fastapi.security import OAuth2PasswordBearer
@@ -39,6 +41,16 @@ RECIPE_CATEGORY_VALUES = (
     "inne",
 )
 RecipeCategoryValue = Literal["obiady", "sniadania", "lunchbox", "salatki", "pieczywo", "desery", "do_sprawdzenia", "inne"]
+LOCAL_ALLOWED_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
+MAX_RECIPE_HTML_BYTES = 2 * 1024 * 1024
+MAX_RECIPE_REDIRECTS = 3
+SAFE_RECIPE_CONTENT_TYPES = ("text/html", "application/xhtml+xml", "text/plain")
+BINARY_RECIPE_CONTENT_TYPES = (
+    "application/octet-stream",
+    "application/pdf",
+    "application/zip",
+    "application/x-zip-compressed",
+)
 
 
 # Load environment variables from .env file
@@ -72,7 +84,6 @@ if not JWT_SECRET_KEY:
 
 JWT_ALGORITHM = os.environ.get("JWT_ALGORITHM", "HS256")
 JWT_EXPIRE_DAYS = int(os.environ.get("JWT_EXPIRE_DAYS", "7"))
-ADMIN_BOOTSTRAP_TOKEN = os.environ.get("ADMIN_BOOTSTRAP_TOKEN")
 
 # --- GOOGLE CALENDAR CONFIG ---
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
@@ -105,12 +116,34 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+def is_production_environment(environ: Optional[dict[str, str]] = None) -> bool:
+    source = environ if environ is not None else os.environ
+    value = (source.get("ENVIRONMENT") or source.get("APP_ENV") or "").strip().lower()
+    return value == "production"
+
+
+def parse_allowed_origins(environ: Optional[dict[str, str]] = None) -> list[str]:
+    source = environ if environ is not None else os.environ
+    raw_origins = source.get("ALLOWED_ORIGINS")
+    origins = [origin.strip() for origin in (raw_origins or "").split(",") if origin.strip()]
+    has_wildcard = "*" in origins
+
+    if is_production_environment(source):
+        if not raw_origins or not origins:
+            raise ValueError("ALLOWED_ORIGINS musi być ustawione w środowisku produkcyjnym")
+        if has_wildcard:
+            raise ValueError("ALLOWED_ORIGINS nie może zawierać '*' w środowisku produkcyjnym")
+        return origins
+
+    if has_wildcard:
+        logger.warning("Ignoruję wildcard '*' w ALLOWED_ORIGINS poza produkcją; używam jawnych originów lub localhost fallback.")
+        origins = [origin for origin in origins if origin != "*"]
+
+    return origins or LOCAL_ALLOWED_ORIGINS
+
+
 # --- CORS ---
-ALLOWED_ORIGINS = [
-    origin.strip()
-    for origin in os.environ.get("ALLOWED_ORIGINS", "*").split(",")
-    if origin.strip()
-]
+ALLOWED_ORIGINS = parse_allowed_origins()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -2922,6 +2955,94 @@ def estimate_recipe_nutrition(
     return None, None, None, last_failure_reason or "fallback_used", "fallback"
 
 
+def _recipe_fetch_error(detail: str = "Nie można pobrać tej strony z przepisem") -> HTTPException:
+    return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+
+
+def _is_public_ip_address(address: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    return not (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_reserved
+        or ip.is_unspecified
+    )
+
+
+def _resolve_host_addresses(hostname: str, port: int | None = None) -> list[str]:
+    try:
+        results = socket.getaddrinfo(hostname, port or 80, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        raise _recipe_fetch_error("Nie można odnaleźć adresu tej strony")
+
+    addresses = sorted({result[4][0] for result in results if result[4]})
+    if not addresses:
+        raise _recipe_fetch_error("Nie można odnaleźć adresu tej strony")
+    return addresses
+
+
+def validate_recipe_source_url(url: str, resolver: Optional[Any] = None) -> None:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        raise _recipe_fetch_error("Obsługiwane są tylko publiczne adresy http i https")
+    if not parsed.hostname:
+        raise _recipe_fetch_error("Adres strony musi zawierać nazwę hosta")
+
+    hostname = parsed.hostname.rstrip(".").lower()
+    if hostname == "localhost" or hostname.endswith(".localhost"):
+        raise _recipe_fetch_error("Nie można importować przepisów z adresów lokalnych")
+
+    try:
+        ip = ipaddress.ip_address(hostname)
+    except ValueError:
+        addresses = resolver(hostname, parsed.port) if resolver else _resolve_host_addresses(hostname, parsed.port)
+        if not addresses or any(not _is_public_ip_address(address) for address in addresses):
+            raise _recipe_fetch_error("Nie można importować przepisów z adresów lokalnych lub prywatnych")
+        return
+
+    if not _is_public_ip_address(str(ip)):
+        raise _recipe_fetch_error("Nie można importować przepisów z adresów lokalnych lub prywatnych")
+
+
+def _is_binary_content_type(content_type: str) -> bool:
+    normalized = content_type.split(";", 1)[0].strip().lower()
+    return normalized.startswith("image/") or normalized in BINARY_RECIPE_CONTENT_TYPES
+
+
+def _is_supported_recipe_content_type(content_type: str) -> bool:
+    normalized = content_type.lower()
+    return not normalized or any(allowed in normalized for allowed in SAFE_RECIPE_CONTENT_TYPES)
+
+
+def _read_limited_response_text(response: requests.Response, max_bytes: int = MAX_RECIPE_HTML_BYTES) -> str:
+    content_length = response.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > max_bytes:
+                raise _recipe_fetch_error("Strona jest za duża do zaimportowania")
+        except ValueError:
+            pass
+
+    chunks: list[bytes] = []
+    total_bytes = 0
+    for chunk in response.iter_content(chunk_size=64 * 1024):
+        if not chunk:
+            continue
+        total_bytes += len(chunk)
+        if total_bytes > max_bytes:
+            raise _recipe_fetch_error("Strona jest za duża do zaimportowania")
+        chunks.append(chunk)
+
+    raw_content = b"".join(chunks)
+    encoding = response.encoding or response.apparent_encoding or "utf-8"
+    return raw_content.decode(encoding, errors="replace")
+
+
 def fetch_html_safely(url: str, timeout: int = 10) -> str:
     """Bezpieczne pobieranie HTML z obsługą błędów"""
     headers = {
@@ -2930,16 +3051,43 @@ def fetch_html_safely(url: str, timeout: int = 10) -> str:
         "Accept-Language": "pl-PL,pl;q=0.9,en;q=0.8",
     }
 
+    current_url = url
     try:
-        response = requests.get(url, headers=headers, timeout=timeout)
-        response.raise_for_status()
-        return response.text
+        for redirect_count in range(MAX_RECIPE_REDIRECTS + 1):
+            validate_recipe_source_url(current_url)
+            response = requests.get(
+                current_url,
+                headers=headers,
+                timeout=timeout,
+                allow_redirects=False,
+                stream=True,
+            )
+            try:
+                if 300 <= response.status_code < 400:
+                    location = response.headers.get("location")
+                    if not location:
+                        raise _recipe_fetch_error("Strona zwróciła nieprawidłowe przekierowanie")
+                    if redirect_count >= MAX_RECIPE_REDIRECTS:
+                        raise _recipe_fetch_error("Strona ma zbyt wiele przekierowań")
+                    current_url = urljoin(current_url, location)
+                    continue
+
+                response.raise_for_status()
+                content_type = response.headers.get("content-type", "")
+                if _is_binary_content_type(content_type):
+                    raise _recipe_fetch_error("Podany adres nie prowadzi do strony tekstowej z przepisem")
+                if not _is_supported_recipe_content_type(content_type):
+                    logger.info("Import przepisu z nietypowym Content-Type: %s", content_type)
+                return _read_limited_response_text(response)
+            finally:
+                response.close()
+
+        raise _recipe_fetch_error("Strona ma zbyt wiele przekierowań")
+    except HTTPException:
+        raise
     except requests.RequestException as e:
-        logger.error(f"Błąd pobierania URL {url}: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Nie można pobrać strony: {str(e)}",
-        )
+        logger.error("Błąd pobierania URL %s: %s", urlparse(url).netloc, str(e))
+        raise _recipe_fetch_error()
 
 def ics_escape(text: str) -> str:
     """Ucieczka znaków zgodna z iCalendar (żeby nie psuć pliku ICS)."""
@@ -2990,7 +3138,21 @@ async def health_check(db: Session = Depends(get_db)):
 # --- AUTH ---
 @app.post("/api/auth/bootstrap", response_model=UserResponse, tags=["Auth"])
 async def bootstrap_admin(request: BootstrapRequest, db: Session = Depends(get_db)):
-    if ADMIN_BOOTSTRAP_TOKEN and request.token != ADMIN_BOOTSTRAP_TOKEN:
+    logger.warning("Próba użycia endpointu bootstrap administratora dla email=%s", request.email.lower())
+
+    bootstrap_enabled = os.environ.get("BOOTSTRAP_ENABLED", "").strip().lower() == "true"
+    if not bootstrap_enabled:
+        raise HTTPException(status_code=403, detail="Bootstrap administratora jest wyłączony")
+
+    bootstrap_token = os.environ.get("ADMIN_BOOTSTRAP_TOKEN")
+    if not bootstrap_token:
+        logger.error("BOOTSTRAP_ENABLED=true, ale ADMIN_BOOTSTRAP_TOKEN nie jest ustawiony")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Błąd konfiguracji bootstrap administratora",
+        )
+
+    if request.token != bootstrap_token:
         raise HTTPException(status_code=403, detail="Nieprawidłowy token bootstrap")
 
     existing_users = db.query(UserDB).count()

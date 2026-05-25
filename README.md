@@ -59,7 +59,10 @@ Opcjonalne zmienne:
 Najważniejsze:
 - `JWT_SECRET_KEY` (wymagane)
 - `DATABASE_URL` (opcjonalne; domyślnie SQLite)
-- `ADMIN_BOOTSTRAP_TOKEN` (opcjonalne, tylko do pierwszego admina)
+- `ENVIRONMENT` lub `APP_ENV` (`development` lokalnie, `production` w produkcji)
+- `ALLOWED_ORIGINS` (w produkcji wymagany dokładny adres frontendu, np. `https://kitchenos.pl`; bez `*`)
+- `BOOTSTRAP_ENABLED` (`true` tylko na czas tworzenia pierwszego admina)
+- `ADMIN_BOOTSTRAP_TOKEN` (wymagane, gdy `BOOTSTRAP_ENABLED=true`)
 
 ### AI (Inspiracje)
 - `GROQ_API_KEY` (wymagane do inspiracji AI)
@@ -72,7 +75,8 @@ Najważniejsze:
 
 ## Pierwszy admin
 Na ekranie logowania włącz „Bootstrap admin”.
-Jeśli ustawisz `ADMIN_BOOTSTRAP_TOKEN`, musisz wpisać go w formularzu.
+Backend utworzy pierwszego admina tylko wtedy, gdy `BOOTSTRAP_ENABLED=true` i podany token zgadza się z `ADMIN_BOOTSTRAP_TOKEN`.
+Po utworzeniu pierwszego admina ustaw `BOOTSTRAP_ENABLED=false` i zrestartuj backend.
 
 ## Migracje DB
 Po pobraniu nowych zmian uruchom:
@@ -88,8 +92,10 @@ Repo to monorepo: dwa serwisy (backend + frontend).
 - Zmienne:
   - `DATABASE_URL` (z pluginu Postgres)
   - `JWT_SECRET_KEY`
-  - `ALLOWED_ORIGINS` = URL frontendu
-  - `ADMIN_BOOTSTRAP_TOKEN` (opcjonalnie)
+  - `ENVIRONMENT=production`
+  - `ALLOWED_ORIGINS` = dokładny URL frontendu, bez `*`
+  - `BOOTSTRAP_ENABLED=false` po utworzeniu pierwszego admina
+  - `ADMIN_BOOTSTRAP_TOKEN` (wymagane tylko, gdy bootstrap jest czasowo włączony)
   - `GROQ_API_KEY` (opcjonalnie)
   - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REDIRECT_URI` (opcjonalnie)
   - `FRONTEND_URL` (opcjonalnie, dla OAuth)
@@ -115,3 +121,4 @@ Repo to monorepo: dwa serwisy (backend + frontend).
 - `.env` jest ignorowany przez git.
 - Lokalnie domyślnie SQLite: `backend/kitchen_os.db`.
 - Produkcyjnie zalecany PostgreSQL.
+- Import przepisów akceptuje publiczne strony `http`/`https`, ale blokuje adresy lokalne, prywatne, link-local, zarezerwowane i przekierowania do takich adresów.
