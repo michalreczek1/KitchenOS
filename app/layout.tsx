@@ -6,9 +6,19 @@ import './globals.css'
 const _inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
+  metadataBase: new URL('https://kitchenos.pl'),
   title: 'KitchenOS — przepisy, plan posiłków i lista zakupów',
   description: 'Zorganizuj swoją kuchnię. Zapisuj przepisy, planuj posiłki na cały tydzień i generuj listę zakupów w KitchenOS.',
-  generator: 'v0.app',
+  alternates: { canonical: '/' },
+  robots: { index: true, follow: true },
+  openGraph: {
+    type: 'website',
+    locale: 'pl_PL',
+    url: 'https://kitchenos.pl',
+    siteName: 'KitchenOS',
+    title: 'KitchenOS — Twoja kuchnia. Wreszcie ogarnięta.',
+    description: 'Przepisy, plan posiłków i lista zakupów w jednym miejscu.',
+  },
   icons: {
     icon: [
       {
