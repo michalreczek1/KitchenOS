@@ -6,8 +6,8 @@ import './globals.css'
 const _inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: 'KitchenOS - Inteligentny Menadżer Kuchni',
-  description: 'Zarządzaj przepisami, planuj posiłki i generuj listy zakupów z pomocą AI',
+  title: 'KitchenOS — przepisy, plan posiłków i lista zakupów',
+  description: 'Zorganizuj swoją kuchnię. Zapisuj przepisy, planuj posiłki na cały tydzień i generuj listę zakupów w KitchenOS.',
   generator: 'v0.app',
   icons: {
     icon: [
@@ -21,7 +21,7 @@ export const metadata: Metadata = {
 }
 
 export const viewport: Viewport = {
-  themeColor: '#22c55e',
+  themeColor: '#1d5944',
   width: 'device-width',
   initialScale: 1,
   maximumScale: 1,

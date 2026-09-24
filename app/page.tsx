@@ -6,6 +6,7 @@ import { Navigation } from '@/components/navigation'
 import { ToastProvider, useToast } from '@/components/toast-provider'
 import { AuthProvider, useAuth } from '@/components/auth-provider'
 import { LoginScreen } from '@/components/login-screen'
+import { LandingPage } from '@/components/landing-page'
 import { DashboardView } from '@/components/views/dashboard-view'
 import { RecipesView } from '@/components/views/recipes-view'
 import { AddRecipeView } from '@/components/views/add-recipe-view'
@@ -666,6 +667,11 @@ function KitchenOSApp({ user, onLogout }: { user: AuthUser; onLogout: () => void
 
 function AppWithAuth() {
   const { user, isLoading, logout } = useAuth()
+  const [showLogin, setShowLogin] = useState(false)
+
+  useEffect(() => {
+    setShowLogin(new URLSearchParams(window.location.search).has('login'))
+  }, [])
 
   if (isLoading) {
     return (
@@ -676,7 +682,7 @@ function AppWithAuth() {
   }
 
   if (!user) {
-    return <LoginScreen />
+    return showLogin ? <LoginScreen /> : <LandingPage />
   }
 
   return <KitchenOSApp key={user.id} user={user} onLogout={logout} />
