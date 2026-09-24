@@ -18,6 +18,7 @@ async function authenticate(page: Page, request: APIRequestContext) {
 
   await page.addInitScript((token) => {
     window.localStorage.setItem('kitchenOS_token', token)
+    window.localStorage.setItem('kitchenos.analyticsConsent.v1', 'denied')
   }, loginBody.access_token)
 }
 

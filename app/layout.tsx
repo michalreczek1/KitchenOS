@@ -2,6 +2,7 @@ import React from "react"
 import type { Metadata, Viewport } from 'next'
 import { Inter } from 'next/font/google'
 import './globals.css'
+import { AnalyticsConsent } from '@/components/analytics-consent'
 
 const _inter = Inter({ subsets: ["latin"] });
 
@@ -47,6 +48,7 @@ export default function RootLayout({
     <html lang="pl">
       <body className={`font-sans antialiased`}>
         {children}
+        <AnalyticsConsent />
       </body>
     </html>
   )

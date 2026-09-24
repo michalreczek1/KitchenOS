@@ -19,3 +19,24 @@ test('landing działa na desktopie i telefonie', async ({ browser, request }) =>
     await page.close()
   }
 })
+
+test('Google Analytics działa dopiero po zgodzie i można ją wycofać', async ({ page }) => {
+  const requests: string[] = []
+  await page.route(/googletagmanager\.com|google-analytics\.com/, async route => {
+    requests.push(route.request().url())
+    await route.abort()
+  })
+  await page.goto('/')
+  const banner = page.getByRole('complementary', { name: 'Zgoda na analitykę' })
+  await expect(banner).toBeVisible()
+  expect(requests).toEqual([])
+  await banner.getByRole('button', { name: 'Zgadzam się' }).click()
+  await expect(banner).toBeHidden()
+  await expect.poll(() => requests.some(url => url.includes('G-QCNWMQRMFD'))).toBeTruthy()
+  await page.goto('/prywatnosc')
+  await page.getByRole('link', { name: 'Zmień ustawienia analityki' }).click()
+  await expect(banner).toBeVisible()
+  await banner.getByRole('button', { name: 'Nie, dziękuję' }).click()
+  await expect(banner).toBeHidden()
+  expect(await page.evaluate(() => localStorage.getItem('kitchenos.analyticsConsent.v1'))).toBe('denied')
+})
